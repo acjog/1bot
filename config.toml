@@ -1,0 +1,43 @@
+# Agent Gateway 配置文件
+
+# ============ 基础配置 ============
+
+# BotB 接入地址（公网/DMZ，HTTPS + JSON-RPC + SSE）
+bot_b_addr = "0.0.0.0:8443"
+
+# BotA 注册地址（内网，WebSocket 长连接）
+bot_a_addr = "0.0.0.0:8080"
+
+# 任务超时时间（秒），超时后任务自动标记为失败
+task_timeout_secs = 60
+
+# Agent 心跳超时时间（秒），超时后自动摘除
+heartbeat_timeout_secs = 300
+
+# 单个 BotB 限流（每分钟最大请求数）
+bot_b_rate_limit = 100
+
+# ============ mTLS 双向证书认证（BotA 接入） ============
+
+# 是否启用 mTLS（启用后 BotA 必须提供客户端证书才能连接）
+mtls_enabled = false
+
+# Gateway 服务端证书路径
+mtls_cert_path = "certs/server.crt"
+
+# Gateway 服务端私钥路径
+mtls_key_path = "certs/server.key"
+
+# CA 证书路径（用于验证 BotA 客户端证书）
+mtls_ca_path = "certs/ca.crt"
+
+# ============ OAuth2 鉴权（BotB 接入） ============
+
+# 是否启用 OAuth2 JWT 鉴权（启用后 BotB 请求必须携带 Bearer Token）
+oauth2_enabled = false
+
+# JWT 签名密钥（HS256 算法）
+oauth2_jwt_secret = "change-me-to-a-secure-secret"
+
+# JWT 签发者（验证 token 中的 iss 字段，为空则不校验）
+oauth2_issuer = "gateway-auth"

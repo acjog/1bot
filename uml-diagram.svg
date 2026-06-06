@@ -1,0 +1,354 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 1580" font-family="arial,sans-serif" font-size="13">
+  <!-- 背景 -->
+  <rect width="1100" height="1580" fill="#fafafa"/>
+
+  <!-- 标题 -->
+  <rect x="0" y="0" width="1100" height="44" fill="#2c3e50"/>
+  <text x="550" y="27" text-anchor="middle" fill="white" font-size="16" font-weight="bold">Agent Gateway — 完整交互时序图</text>
+
+  <!-- ===== 参与者定义 ===== -->
+  <!-- Orchestrator -->
+  <rect x="30" y="55" width="150" height="44" rx="6" fill="#3498db" stroke="#2980b9" stroke-width="1.5"/>
+  <text x="105" y="82" text-anchor="middle" fill="white" font-weight="bold" font-size="13">Orchestrator</text>
+  <!-- Gateway -->
+  <rect x="330" y="55" width="150" height="44" rx="6" fill="#e67e22" stroke="#d35400" stroke-width="1.5"/>
+  <text x="405" y="82" text-anchor="middle" fill="white" font-weight="bold" font-size="13">Gateway</text>
+  <!-- Registry/TaskStore -->
+  <rect x="620" y="55" width="160" height="44" rx="6" fill="#8e44ad" stroke="#7d3c98" stroke-width="1.5"/>
+  <text x="700" y="75" text-anchor="middle" fill="white" font-weight="bold" font-size="12">Registry /</text>
+  <text x="700" y="91" text-anchor="middle" fill="white" font-weight="bold" font-size="12">TaskStore</text>
+  <!-- Remote Bot -->
+  <rect x="910" y="55" width="150" height="44" rx="6" fill="#27ae60" stroke="#229954" stroke-width="1.5"/>
+  <text x="985" y="82" text-anchor="middle" fill="white" font-weight="bold" font-size="13">Remote Bot</text>
+
+  <!-- ===== 生命线 ===== -->
+  <line x1="105" y1="99" x2="105" y2="1540" stroke="#3498db" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+  <line x1="405" y1="99" x2="405" y2="1540" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+  <line x1="700" y1="99" x2="700" y2="1540" stroke="#8e44ad" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+  <line x1="985" y1="99" x2="985" y2="1540" stroke="#27ae60" stroke-width="1.5" stroke-dasharray="6,4" opacity="0.5"/>
+
+  <!-- ===== 箭头定义 ===== -->
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333"/>
+    </marker>
+    <marker id="arr-dash" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#888"/>
+    </marker>
+    <marker id="arr-red" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#e74c3c"/>
+    </marker>
+    <marker id="arr-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#3498db"/>
+    </marker>
+    <marker id="arr-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#27ae60"/>
+    </marker>
+    <marker id="arr-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#8e44ad"/>
+    </marker>
+  </defs>
+
+  <!-- ============================================================ -->
+  <!-- 阶段一：Remote Bot 注册 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="115" width="1080" height="22" rx="3" fill="#27ae60" opacity="0.15"/>
+  <text x="550" y="130" text-anchor="middle" fill="#1a6b3a" font-weight="bold" font-size="12">① Remote Bot 启动注册</text>
+
+  <!-- WS Connect -->
+  <line x1="985" y1="148" x2="410" y2="148" stroke="#27ae60" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="697" y="143" text-anchor="middle" fill="#27ae60" font-size="11">WebSocket Connect  ws://:8080/agent/register</text>
+
+  <!-- x-agent/register -->
+  <line x1="985" y1="172" x2="410" y2="172" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="697" y="167" text-anchor="middle" fill="#333" font-size="11">x-agent/register  { card: { name, skills, max_concurrency }, namespace }</text>
+
+  <!-- Gateway → Registry.register -->
+  <line x1="405" y1="192" x2="695" y2="192" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="187" text-anchor="middle" fill="#8e44ad" font-size="11">Registry.register(AgentHandle)</text>
+
+  <!-- Registry 返回 -->
+  <line x1="695" y1="210" x2="410" y2="210" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="550" y="205" text-anchor="middle" fill="#888" font-size="10">注册成功，agent_id = card.name</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段二：能力发现 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="228" width="1080" height="22" rx="3" fill="#3498db" opacity="0.15"/>
+  <text x="550" y="243" text-anchor="middle" fill="#1a4a7a" font-weight="bold" font-size="12">② Orchestrator 能力发现（可选）</text>
+
+  <!-- GET /.well-known/agent.json -->
+  <line x1="105" y1="262" x2="400" y2="262" stroke="#3498db" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="252" y="257" text-anchor="middle" fill="#3498db" font-size="11">GET /.well-known/agent.json</text>
+
+  <!-- Gateway → Registry.list -->
+  <line x1="405" y1="278" x2="695" y2="278" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="273" text-anchor="middle" fill="#8e44ad" font-size="11">Registry.list() → 聚合所有 skills</text>
+
+  <!-- 返回 Agent Card -->
+  <line x1="400" y1="296" x2="110" y2="296" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="252" y="291" text-anchor="middle" fill="#888" font-size="10">{ skills: [summarize, translate, ...], _meta: { online_agents } }</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段三：创建任务 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="314" width="1080" height="22" rx="3" fill="#e67e22" opacity="0.15"/>
+  <text x="550" y="329" text-anchor="middle" fill="#7d3c00" font-weight="bold" font-size="12">③ Orchestrator 创建任务</text>
+
+  <!-- POST /tasks -->
+  <line x1="105" y1="350" x2="400" y2="350" stroke="#3498db" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="252" y="345" text-anchor="middle" fill="#3498db" font-size="11">POST /tasks  { skill, instruction, constraints }</text>
+
+  <!-- Gateway → TaskStore.create -->
+  <line x1="405" y1="368" x2="695" y2="368" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="363" text-anchor="middle" fill="#8e44ad" font-size="11">TaskStore.create() → task_id = uuid</text>
+
+  <!-- Registry.pick_agent -->
+  <line x1="405" y1="386" x2="695" y2="386" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="381" text-anchor="middle" fill="#8e44ad" font-size="11">Registry.pick_agent_for_skill_in_ns(skill, namespace)</text>
+
+  <!-- 返回 agent handle -->
+  <line x1="695" y1="402" x2="410" y2="402" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="550" y="397" text-anchor="middle" fill="#888" font-size="10">AgentHandle（最低负载策略）</text>
+
+  <!-- TaskStore.transition → Queued -->
+  <line x1="405" y1="418" x2="695" y2="418" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="413" text-anchor="middle" fill="#8e44ad" font-size="11">transition(Queued) + broadcast(TaskEvent::Queued)</text>
+
+  <!-- 返回 task_id -->
+  <line x1="400" y1="436" x2="110" y2="436" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="252" y="431" text-anchor="middle" fill="#888" font-size="10">{ task_id, status: queued, assigned_agent }</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段四：SSE 订阅 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="454" width="1080" height="22" rx="3" fill="#3498db" opacity="0.12"/>
+  <text x="550" y="469" text-anchor="middle" fill="#1a4a7a" font-weight="bold" font-size="12">④ Orchestrator 订阅 SSE 进度流</text>
+
+  <!-- GET /tasks/:id/stream -->
+  <line x1="105" y1="490" x2="400" y2="490" stroke="#3498db" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="252" y="485" text-anchor="middle" fill="#3498db" font-size="11">GET /tasks/:task_id/stream</text>
+
+  <!-- TaskStore.get + subscribe -->
+  <line x1="405" y1="506" x2="695" y2="506" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="501" text-anchor="middle" fill="#8e44ad" font-size="11">TaskStore.get() + event_tx.subscribe()</text>
+
+  <!-- 推送初始状态 -->
+  <line x1="400" y1="524" x2="110" y2="524" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="252" y="519" text-anchor="middle" fill="#888" font-size="10">event: queued  data: { task_id, agent_id }  (初始状态)</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段五：任务分派 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="542" width="1080" height="22" rx="3" fill="#e67e22" opacity="0.15"/>
+  <text x="550" y="557" text-anchor="middle" fill="#7d3c00" font-weight="bold" font-size="12">⑤ Gateway 分派任务给 Remote Bot</text>
+
+  <!-- agent.inc_load -->
+  <line x1="405" y1="576" x2="695" y2="576" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="571" text-anchor="middle" fill="#8e44ad" font-size="11">AgentHandle.inc_load()  current_load++</text>
+
+  <!-- tasks/send via WebSocket -->
+  <line x1="405" y1="596" x2="980" y2="596" stroke="#e67e22" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="692" y="591" text-anchor="middle" fill="#e67e22" font-size="11">tasks/send  { id, message.parts[text], metadata.skill }</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段六：进度上报 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="614" width="1080" height="22" rx="3" fill="#27ae60" opacity="0.12"/>
+  <text x="550" y="629" text-anchor="middle" fill="#1a6b3a" font-weight="bold" font-size="12">⑥ Remote Bot 执行并上报进度</text>
+
+  <!-- tasks/status running 10% -->
+  <line x1="985" y1="650" x2="410" y2="650" stroke="#27ae60" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="697" y="645" text-anchor="middle" fill="#27ae60" font-size="11">tasks/status  { id, status: running, progress: 10, message }</text>
+
+  <!-- Gateway → TaskStore transition Running -->
+  <line x1="405" y1="666" x2="695" y2="666" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="661" text-anchor="middle" fill="#8e44ad" font-size="11">transition(Running) + broadcast(TaskEvent::Progress)</text>
+
+  <!-- SSE event: progress 10% -->
+  <line x1="400" y1="682" x2="110" y2="682" stroke="#3498db" stroke-width="1.5" stroke-dasharray="8,3" marker-end="url(#arr-blue)"/>
+  <text x="252" y="677" text-anchor="middle" fill="#3498db" font-size="11">SSE event: progress  { pct: 10, message }</text>
+
+  <!-- tasks/status running 50% -->
+  <line x1="985" y1="702" x2="410" y2="702" stroke="#27ae60" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="697" y="697" text-anchor="middle" fill="#27ae60" font-size="11">tasks/status  { id, status: running, progress: 50, message }</text>
+
+  <!-- broadcast -->
+  <line x1="405" y1="718" x2="695" y2="718" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="713" text-anchor="middle" fill="#8e44ad" font-size="11">broadcast(TaskEvent::Progress { pct: 50 })</text>
+
+  <!-- SSE event: progress 50% -->
+  <line x1="400" y1="734" x2="110" y2="734" stroke="#3498db" stroke-width="1.5" stroke-dasharray="8,3" marker-end="url(#arr-blue)"/>
+  <text x="252" y="729" text-anchor="middle" fill="#3498db" font-size="11">SSE event: progress  { pct: 50, message }</text>
+
+  <!-- tasks/status running 100% -->
+  <line x1="985" y1="754" x2="410" y2="754" stroke="#27ae60" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="697" y="749" text-anchor="middle" fill="#27ae60" font-size="11">tasks/status  { id, status: running, progress: 100, message }</text>
+
+  <!-- broadcast -->
+  <line x1="405" y1="770" x2="695" y2="770" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="765" text-anchor="middle" fill="#8e44ad" font-size="11">broadcast(TaskEvent::Progress { pct: 100 })</text>
+
+  <!-- SSE event: progress 100% -->
+  <line x1="400" y1="786" x2="110" y2="786" stroke="#3498db" stroke-width="1.5" stroke-dasharray="8,3" marker-end="url(#arr-blue)"/>
+  <text x="252" y="781" text-anchor="middle" fill="#3498db" font-size="11">SSE event: progress  { pct: 100, message }</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段七：任务完成 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="804" width="1080" height="22" rx="3" fill="#27ae60" opacity="0.15"/>
+  <text x="550" y="819" text-anchor="middle" fill="#1a6b3a" font-weight="bold" font-size="12">⑦ 任务完成，返回结果</text>
+
+  <!-- tasks/status completed -->
+  <line x1="985" y1="840" x2="410" y2="840" stroke="#27ae60" stroke-width="2" marker-end="url(#arr-green)"/>
+  <text x="697" y="835" text-anchor="middle" fill="#27ae60" font-size="11">tasks/status  { id, status: completed, artifact: { text: ... } }</text>
+
+  <!-- TaskStore.set_artifact -->
+  <line x1="405" y1="858" x2="695" y2="858" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="853" text-anchor="middle" fill="#8e44ad" font-size="11">set_artifact() + broadcast(TaskEvent::Completed)</text>
+
+  <!-- dec_load -->
+  <line x1="405" y1="874" x2="695" y2="874" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="869" text-anchor="middle" fill="#8e44ad" font-size="11">AgentHandle.dec_load()  current_load--</text>
+
+  <!-- SSE event: completed -->
+  <line x1="400" y1="892" x2="110" y2="892" stroke="#3498db" stroke-width="2" stroke-dasharray="8,3" marker-end="url(#arr-blue)"/>
+  <text x="252" y="887" text-anchor="middle" fill="#3498db" font-size="11">SSE event: completed  { artifact }  → SSE 流关闭</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段八：查询任务结果 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="910" width="1080" height="22" rx="3" fill="#3498db" opacity="0.12"/>
+  <text x="550" y="925" text-anchor="middle" fill="#1a4a7a" font-weight="bold" font-size="12">⑧ Orchestrator 主动查询任务结果（可选）</text>
+
+  <!-- GET /tasks/:id -->
+  <line x1="105" y1="946" x2="400" y2="946" stroke="#3498db" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="252" y="941" text-anchor="middle" fill="#3498db" font-size="11">GET /tasks/:task_id</text>
+
+  <!-- TaskStore.get -->
+  <line x1="405" y1="962" x2="695" y2="962" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="957" text-anchor="middle" fill="#8e44ad" font-size="11">TaskStore.get(task_id)</text>
+
+  <!-- 返回 TaskRecord -->
+  <line x1="400" y1="980" x2="110" y2="980" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="252" y="975" text-anchor="middle" fill="#888" font-size="10">{ status: completed, artifact, assigned_agent, created_at, updated_at }</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段九：心跳探活 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="998" width="1080" height="22" rx="3" fill="#f39c12" opacity="0.15"/>
+  <text x="550" y="1013" text-anchor="middle" fill="#7d5a00" font-weight="bold" font-size="12">⑨ 心跳探活（每 10 秒，后台持续运行）</text>
+
+  <!-- loop 框 -->
+  <rect x="320" y="1028" width="740" height="100" rx="4" fill="none" stroke="#f39c12" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <rect x="320" y="1028" width="80" height="20" rx="2" fill="#f39c12" opacity="0.3"/>
+  <text x="360" y="1042" text-anchor="middle" fill="#7d5a00" font-size="11" font-weight="bold">loop</text>
+  <text x="690" y="1042" text-anchor="middle" fill="#7d5a00" font-size="11">每 10 秒</text>
+
+  <!-- Pinger → x-agent/ping -->
+  <line x1="405" y1="1062" x2="980" y2="1062" stroke="#f39c12" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="692" y="1057" text-anchor="middle" fill="#f39c12" font-size="11">x-agent/ping  { method, id: "ping" }</text>
+
+  <!-- Remote Bot → pong response -->
+  <line x1="985" y1="1082" x2="410" y2="1082" stroke="#27ae60" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="692" y="1077" text-anchor="middle" fill="#27ae60" font-size="11">JSON-RPC response  { result: { status: ok }, id: "ping" }</text>
+
+  <!-- touch() -->
+  <line x1="405" y1="1100" x2="695" y2="1100" stroke="#8e44ad" stroke-width="1.5" marker-end="url(#arr-purple)"/>
+  <text x="550" y="1095" text-anchor="middle" fill="#8e44ad" font-size="11">AgentHandle.touch()  更新 last_heartbeat</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段十：超时摘除 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="1148" width="1080" height="22" rx="3" fill="#e74c3c" opacity="0.15"/>
+  <text x="550" y="1163" text-anchor="middle" fill="#7d0000" font-weight="bold" font-size="12">⑩ 超时摘除（background_monitor 每 10 秒检查）</text>
+
+  <!-- alt 框 -->
+  <rect x="320" y="1178" width="740" height="130" rx="4" fill="none" stroke="#e74c3c" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <rect x="320" y="1178" width="60" height="20" rx="2" fill="#e74c3c" opacity="0.3"/>
+  <text x="350" y="1192" text-anchor="middle" fill="#7d0000" font-size="11" font-weight="bold">alt</text>
+  <text x="690" y="1192" text-anchor="middle" fill="#7d0000" font-size="11">30s 内无心跳响应</text>
+
+  <!-- evict_stale_agents -->
+  <line x1="405" y1="1212" x2="695" y2="1212" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#arr-red)"/>
+  <text x="550" y="1207" text-anchor="middle" fill="#e74c3c" font-size="11">Registry.evict_stale_agents(30)</text>
+
+  <!-- unregister -->
+  <line x1="695" y1="1230" x2="410" y2="1230" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="550" y="1225" text-anchor="middle" fill="#888" font-size="10">Registry.unregister(agent_id)  从注册表移除</text>
+
+  <!-- 任务超时 -->
+  <line x1="320" y1="1250" x2="1060" y2="1250" stroke="#e74c3c" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+  <text x="690" y="1264" text-anchor="middle" fill="#7d0000" font-size="11">60s 内任务未完成</text>
+
+  <!-- timeout_running_tasks -->
+  <line x1="405" y1="1282" x2="695" y2="1282" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#arr-red)"/>
+  <text x="550" y="1277" text-anchor="middle" fill="#e74c3c" font-size="11">TaskStore.timeout_running_tasks(60) → set_error + broadcast(Failed)</text>
+
+  <!-- SSE event: failed -->
+  <line x1="400" y1="1300" x2="110" y2="1300" stroke="#3498db" stroke-width="1.5" stroke-dasharray="8,3" marker-end="url(#arr-blue)"/>
+  <text x="252" y="1295" text-anchor="middle" fill="#3498db" font-size="11">SSE event: failed  { error: "task timeout" }</text>
+
+  <!-- ============================================================ -->
+  <!-- 阶段十一：JSON-RPC 接入（可选） -->
+  <!-- ============================================================ -->
+  <rect x="10" y="1328" width="1080" height="22" rx="3" fill="#9b59b6" opacity="0.15"/>
+  <text x="550" y="1343" text-anchor="middle" fill="#4a235a" font-weight="bold" font-size="12">⑪ JSON-RPC 2.0 接入（可选，与 RESTful 等价）</text>
+
+  <!-- POST /jsonrpc tasks/send -->
+  <line x1="105" y1="1364" x2="400" y2="1364" stroke="#3498db" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="252" y="1359" text-anchor="middle" fill="#3498db" font-size="11">POST /jsonrpc  { method: tasks/send, params: { skill, instruction } }</text>
+
+  <!-- 返回 -->
+  <line x1="400" y1="1382" x2="110" y2="1382" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="252" y="1377" text-anchor="middle" fill="#888" font-size="10">{ result: { task_id, status: queued } }</text>
+
+  <!-- POST /jsonrpc agents/list -->
+  <line x1="105" y1="1402" x2="400" y2="1402" stroke="#3498db" stroke-width="1.5" marker-end="url(#arr-blue)"/>
+  <text x="252" y="1397" text-anchor="middle" fill="#3498db" font-size="11">POST /jsonrpc  { method: agents/list, params: {} }</text>
+
+  <!-- 返回 agents -->
+  <line x1="400" y1="1420" x2="110" y2="1420" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="252" y="1415" text-anchor="middle" fill="#888" font-size="10">{ result: [{ id, card, load, connected_at }] }</text>
+
+  <!-- ============================================================ -->
+  <!-- 底部参与者 -->
+  <!-- ============================================================ -->
+  <rect x="30" y="1448" width="150" height="44" rx="6" fill="#3498db" stroke="#2980b9" stroke-width="1.5"/>
+  <text x="105" y="1475" text-anchor="middle" fill="white" font-weight="bold" font-size="13">Orchestrator</text>
+  <rect x="330" y="1448" width="150" height="44" rx="6" fill="#e67e22" stroke="#d35400" stroke-width="1.5"/>
+  <text x="405" y="1475" text-anchor="middle" fill="white" font-weight="bold" font-size="13">Gateway</text>
+  <rect x="620" y="1448" width="160" height="44" rx="6" fill="#8e44ad" stroke="#7d3c98" stroke-width="1.5"/>
+  <text x="700" y="1468" text-anchor="middle" fill="white" font-weight="bold" font-size="12">Registry /</text>
+  <text x="700" y="1484" text-anchor="middle" fill="white" font-weight="bold" font-size="12">TaskStore</text>
+  <rect x="910" y="1448" width="150" height="44" rx="6" fill="#27ae60" stroke="#229954" stroke-width="1.5"/>
+  <text x="985" y="1475" text-anchor="middle" fill="white" font-weight="bold" font-size="13">Remote Bot</text>
+
+  <!-- ============================================================ -->
+  <!-- 图例 -->
+  <!-- ============================================================ -->
+  <rect x="10" y="1500" width="1080" height="72" rx="4" fill="#ecf0f1" stroke="#bdc3c7" stroke-width="1"/>
+  <text x="20" y="1518" fill="#555" font-size="11" font-weight="bold">图例：</text>
+  <line x1="70" y1="1514" x2="110" y2="1514" stroke="#333" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="115" y="1518" fill="#333" font-size="11">同步调用</text>
+  <line x1="200" y1="1514" x2="240" y2="1514" stroke="#888" stroke-width="1" stroke-dasharray="5,3" marker-end="url(#arr-dash)"/>
+  <text x="245" y="1518" fill="#888" font-size="11">返回/响应</text>
+  <line x1="340" y1="1514" x2="380" y2="1514" stroke="#3498db" stroke-width="1.5" stroke-dasharray="8,3" marker-end="url(#arr-blue)"/>
+  <text x="385" y="1518" fill="#3498db" font-size="11">SSE 推送</text>
+  <line x1="460" y1="1514" x2="500" y2="1514" stroke="#27ae60" stroke-width="1.5" marker-end="url(#arr-green)"/>
+  <text x="505" y="1518" fill="#27ae60" font-size="11">Remote Bot → Gateway (WS)</text>
+  <line x1="680" y1="1514" x2="720" y2="1514" stroke="#e67e22" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="725" y="1518" fill="#e67e22" font-size="11">Gateway → Remote Bot (WS)</text>
+  <line x1="900" y1="1514" x2="940" y2="1514" stroke="#e74c3c" stroke-width="1.5" marker-end="url(#arr-red)"/>
+  <text x="945" y="1518" fill="#e74c3c" font-size="11">超时/错误</text>
+
+  <text x="20" y="1540" fill="#555" font-size="11" font-weight="bold">协议：</text>
+  <rect x="60" y="1528" width="12" height="12" rx="2" fill="#3498db"/>
+  <text x="76" y="1540" fill="#555" font-size="11">Orchestrator ↔ Gateway: HTTP/SSE (REST + JSON-RPC 2.0)</text>
+  <rect x="420" y="1528" width="12" height="12" rx="2" fill="#27ae60"/>
+  <text x="436" y="1540" fill="#555" font-size="11">Gateway ↔ Remote Bot: WebSocket (A2A JSON-RPC 2.0)</text>
+  <rect x="760" y="1528" width="12" height="12" rx="2" fill="#8e44ad"/>
+  <text x="776" y="1540" fill="#555" font-size="11">内部: Registry + TaskStore (内存，DashMap)</text>
+
+  <text x="20" y="1562" fill="#888" font-size="10">* 心跳探活（⑨）与任务执行（⑥⑦）并发进行；background_monitor 独立 tokio 任务，每 10s 检查心跳超时（30s）和任务超时（60s）</text>
+</svg>

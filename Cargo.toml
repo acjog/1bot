@@ -1,0 +1,73 @@
+[package]
+name = "agent-gateway"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+description = "Multi-Agent Gateway: A2A protocol bridge between BotB (Orchestrator) and BotA (Nanobot Workers)"
+license = "MIT"
+
+[dependencies]
+# Web framework
+axum = { version = "0.7", features = ["ws", "macros"] }
+tokio = { version = "1.40", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async utilities
+futures = "0.3"
+futures-util = "0.3"
+async-trait = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Logging & tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# UUID & time
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Concurrency primitives
+dashmap = "6.1"
+parking_lot = "0.12"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Configuration
+config = "0.14"
+
+# TLS / mTLS
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2"
+tokio-rustls = "0.26"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+
+# OAuth2 / JWT 鉴权
+jsonwebtoken = "9"
+once_cell = "1.19"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"
+reqwest = { version = "0.12", features = ["json"] }
+
+[[example]]
+name = "mock_nanobot"
+path = "examples/mock_nanobot.rs"
+
+[[example]]
+name = "ws_file_bridge"
+path = "examples/ws_file_bridge.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
