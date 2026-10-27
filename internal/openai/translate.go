@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 
@@ -109,6 +111,22 @@ func normalizeArgs(raw json.RawMessage) json.RawMessage {
 		return raw
 	}
 	return json.RawMessage("{}")
+}
+
+// sessionKey derives a stable conversation key without any client cooperation:
+// it anchors on the first user message, so every turn of one conversation (each
+// re-sending the full history) maps to the same key, while a fresh conversation
+// gets a fresh key. Empty when there is no user message yet.
+func sessionKey(messages []transport.Message) string {
+	for _, m := range messages {
+		if m.Role != "user" {
+			continue
+		}
+		b, _ := json.Marshal(m)
+		sum := sha256.Sum256(b)
+		return hex.EncodeToString(sum[:8])
+	}
+	return ""
 }
 
 // contentText extracts the text from a content field that is either a plain

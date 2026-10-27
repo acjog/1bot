@@ -54,7 +54,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = s.model
 	}
-	request := transport.Request{Messages: messages, Model: model, ToolChoice: req.ToolChoice}
+	request := transport.Request{Session: sessionKey(messages), Messages: messages, Model: model, ToolChoice: req.ToolChoice}
 	if len(req.ToolChoice) > 0 && string(req.ToolChoice) != "null" && string(req.ToolChoice) != `"auto"` && string(req.ToolChoice) != `"none"` {
 		http.Error(w, "tool_choice currently supports auto or none", http.StatusBadRequest)
 		return

@@ -26,6 +26,7 @@ type Options struct {
 }
 type session struct {
 	threadID, turnID, model string
+	sessionKey              string
 	events                  chan wireMessage
 	history                 []transport.Message
 	tools                   []transport.Tool
@@ -43,14 +44,15 @@ type Client struct {
 	pending                            map[string]chan wireMessage
 	nextID                             int64
 	closed                             chan struct{}
-	sessions                           map[string]*session
-	toolSessions                       map[string]*session
+	sessions                           map[string]*session // threadID -> session
+	toolSessions                       map[string]*session // callID -> session (pending tool result)
+	bySession                          map[string]*session // sessionKey -> session (reused across turns)
 	serverOverrides                    map[string]any
 }
 
 func New(opts Options) *Client {
 	return &Client{opts: opts, pending: map[string]chan wireMessage{}, closed: make(chan struct{}),
-		sessions: map[string]*session{}, toolSessions: map[string]*session{}}
+		sessions: map[string]*session{}, toolSessions: map[string]*session{}, bySession: map[string]*session{}}
 }
 func (c *Client) Start() error {
 	c.cmd = exec.Command(c.opts.Bin, "app-server")
@@ -266,27 +268,49 @@ func (c *Client) Complete(req transport.Request, onEvent func(transport.Event)) 
 		c.eventMu.Unlock()
 		s.call = nil
 		s.history = req.Messages
+		s.updated = time.Now()
 	} else {
 		if last.Role != "user" {
 			return "", fmt.Errorf("new requests must end with a user message; tool results require a live tool_call_id")
 		}
-		c.eventMu.Lock()
-		count := len(c.sessions)
-		c.eventMu.Unlock()
-		if count >= 128 {
-			return "", fmt.Errorf("too many pending tool conversations")
-		}
 		var err error
-		s, err = c.startSession(req)
-		if err != nil {
-			return "", err
-		}
-		if items := historyItems(req.Messages[:len(req.Messages)-1]); len(items) > 0 {
-			if _, err = c.call("thread/inject_items", map[string]any{"threadId": s.threadID, "items": items}); err != nil {
+		// Reuse the backend thread for the same conversation key, so tools and
+		// context injected on an earlier turn survive. A model or tool change
+		// invalidates the reuse.
+		if req.Session != "" {
+			c.eventMu.Lock()
+			s = c.bySession[req.Session]
+			c.eventMu.Unlock()
+			if s != nil && (s.model != req.Model || !semanticEqual(s.tools, req.Tools)) {
 				c.retire(s)
-				return "", err
+				s = nil
 			}
 		}
+		if s == nil {
+			c.eventMu.Lock()
+			count := len(c.sessions)
+			c.eventMu.Unlock()
+			if count >= 128 {
+				return "", fmt.Errorf("too many pending tool conversations")
+			}
+			s, err = c.startSession(req)
+			if err != nil {
+				return "", err
+			}
+			if req.Session != "" {
+				s.sessionKey = req.Session
+				c.eventMu.Lock()
+				c.bySession[req.Session] = s
+				c.eventMu.Unlock()
+			}
+			if items := historyItems(req.Messages[:len(req.Messages)-1]); len(items) > 0 {
+				if _, err = c.call("thread/inject_items", map[string]any{"threadId": s.threadID, "items": items}); err != nil {
+					c.retire(s)
+					return "", err
+				}
+			}
+		}
+		s.updated = time.Now()
 		input := []any{}
 		for _, p := range last.Parts {
 			if p.Kind == transport.PartText {
@@ -307,7 +331,7 @@ func (c *Client) Complete(req transport.Request, onEvent func(transport.Event)) 
 		s.turnID = r.Turn.ID
 	}
 	stop, err := c.await(s, onEvent)
-	if err != nil || stop != transport.StopToolUse {
+	if err != nil {
 		c.retire(s)
 	}
 	return stop, err
@@ -445,6 +469,9 @@ func (c *Client) await(s *session, onEvent func(transport.Event)) (string, error
 func (c *Client) retire(s *session) {
 	c.eventMu.Lock()
 	delete(c.sessions, s.threadID)
+	if s.sessionKey != "" && c.bySession[s.sessionKey] == s {
+		delete(c.bySession, s.sessionKey)
+	}
 	if s.call != nil {
 		delete(c.toolSessions, s.call.ID)
 	}

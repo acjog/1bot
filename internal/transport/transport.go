@@ -22,7 +22,11 @@ type Tool struct {
 }
 
 // Request preserves request-scoped model and tool declarations across plugins.
+// Session is an opaque conversation key: when non-empty, a plugin may reuse the
+// backend conversation it opened for the same key (so tools/context injected on
+// an earlier turn survive). It is derived by the gateway, not the API client.
 type Request struct {
+	Session    string          `json:"session,omitempty"`
 	Messages   []Message       `json:"messages"`
 	Model      string          `json:"model,omitempty"`
 	Tools      []Tool          `json:"tools,omitempty"`
