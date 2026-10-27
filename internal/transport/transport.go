@@ -1,36 +1,94 @@
 // Package transport defines the boundary between the gateway's core and the
 // concrete way it reaches an upstream model — a child process speaking ACP
 // today, an HTTP endpoint later. Routing and protocol translation only see
-// Transport and Event; they never see a specific implementation.
+// Transport, Message and Event; they never see a specific implementation.
+//
+// The package also owns the gateway's one neutral shape for tool use, so the
+// OpenAI front, the plugin wire protocol and the CodeBuddy/Codex backends all
+// translate into the same ToolCall and ToolResult instead of each other's
+// formats.
 package transport
 
+import "encoding/json"
+
 // EventKind is one reduced category of a streamed reply. The upstream may
-// emit many more, but the gateway only needs these three.
+// emit many more, but the gateway only needs these.
 type EventKind string
 
 const (
-	EventText    EventKind = "text"    // user-visible reply text
-	EventThought EventKind = "thought" // reasoning, usually hidden
-	EventTool    EventKind = "tool"    // an upstream tool was invoked
+	EventText     EventKind = "text"      // user-visible reply text
+	EventThought  EventKind = "thought"   // reasoning, usually hidden
+	EventToolCall EventKind = "tool_call" // a tool the model asks the client to run
 )
 
 // Event is one streamed piece of an upstream reply.
 type Event struct {
 	Kind EventKind
-	Text string // set when Kind is EventText or EventThought
-	Tool string // set when Kind is EventTool
+	Text string    // set when Kind is EventText or EventThought
+	Call *ToolCall // set when Kind is EventToolCall
 }
 
-// Transport turns one user message into a stream of Events plus a stop
-// reason. Implementations own their concurrency: a single Transport instance
-// need not support concurrent Turn calls.
+// ToolCall is the gateway's neutral tool invocation: an id (mapped back and
+// forth to each backend's own id), a name and JSON arguments.
+type ToolCall struct {
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+// ToolResult is the gateway's neutral tool result: the call it answers and
+// the text it produced.
+type ToolResult struct {
+	CallID  string `json:"callId"`
+	Content string `json:"content"`
+	IsError bool   `json:"isError,omitempty"`
+}
+
+// PartKind is one kind of message part.
+type PartKind string
+
+const (
+	PartText       PartKind = "text"
+	PartToolCall   PartKind = "tool_call"
+	PartToolResult PartKind = "tool_result"
+)
+
+// Part is one item of a Message: plain text, a tool call, or a tool result.
+type Part struct {
+	Kind   PartKind    `json:"kind"`
+	Text   string      `json:"text,omitempty"`
+	Call   *ToolCall   `json:"call,omitempty"`
+	Result *ToolResult `json:"result,omitempty"`
+}
+
+// Message is the gateway's neutral conversation message. A role of "user"
+// carries tool results and user text; "assistant" carries reply text and
+// tool calls.
+type Message struct {
+	Role  string `json:"role"`
+	Parts []Part `json:"parts"`
+}
+
+// Stop reasons a Turn may return. A turn either ends with a plain reply
+// (StopEndTurn) or with tool calls the client must run (StopToolUse).
+const (
+	StopEndTurn = "end_turn"
+	StopToolUse = "tool_use"
+)
+
+// Transport turns one conversation (the whole history, tool calls and results
+// included) into a stream of Events plus a stop reason. Implementations own
+// their concurrency: a single Transport instance need not support concurrent
+// Turn calls, but it must keep the backend conversation alive across Turn
+// calls so tool results sent on the next turn can resume it.
 type Transport interface {
 	// Start launches the transport and performs any handshake.
 	Start() error
-	// Turn sends text as the user prompt and streams the reply through
-	// onEvent (called sequentially, on the transport's reader goroutine).
-	// It returns the upstream stop reason.
-	Turn(text string, onEvent func(Event)) (stopReason string, err error)
+	// Turn advances the conversation one step. It streams the reply through
+	// onEvent (called sequentially, on the transport's reader goroutine) and
+	// returns StopEndTurn when the reply is final, or StopToolUse when the
+	// model has asked for tools whose results the next Turn will carry.
+	Turn(messages []Message, onEvent func(Event)) (stopReason string, err error)
 	// Close releases the transport's resources.
 	Close() error
 }

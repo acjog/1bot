@@ -71,12 +71,6 @@ func main() {
 
 		var p proto.TurnParams
 		_ = json.Unmarshal(f.Params, &p)
-		text := ""
-		for _, part := range p.Prompt {
-			if part.Type == "text" {
-				text += part.Text
-			}
-		}
 
 		var turnID int64
 		_ = json.Unmarshal(f.ID, &turnID)
@@ -88,14 +82,14 @@ func main() {
 				ep.Kind, ep.Text = "text", ev.Text
 			case transport.EventThought:
 				ep.Kind, ep.Text = "thought", ev.Text
-			case transport.EventTool:
-				ep.Kind, ep.Name = "tool", ev.Tool
+			case transport.EventToolCall:
+				ep.Kind, ep.Call = "tool_call", ev.Call
 			}
 			b, _ := json.Marshal(ep)
 			write(proto.Frame{JSONRPC: "2.0", Method: proto.MethodEvent, Params: b})
 		}
 
-		stop, err := c.Turn(text, onEvent)
+		stop, err := c.Turn(p.Messages, onEvent)
 		if err != nil {
 			write(proto.Frame{JSONRPC: "2.0", ID: f.ID, Error: &proto.Error{Code: -32000, Message: err.Error()}})
 			continue

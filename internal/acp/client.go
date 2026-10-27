@@ -1,6 +1,14 @@
 // Package acp drives CodeBuddy Code in ACP (Agent Client Protocol) mode over
 // stdio. It speaks the JSON-RPC-over-NDJSON dialect the child expects, and
 // reduces the child's many sessionUpdate variants to transport.Event.
+//
+// Tool execution is handed back to the caller instead of running on the
+// gateway's machine: initialize declares the client's fs and terminal
+// capabilities, so CodeBuddy turns a file read or a command into a reverse
+// request (fs/read_text_file, fs/write_text_file, terminal/create). Those
+// reverse requests become transport.EventToolCall, and the tool results the
+// next Turn carries are answered back to the waiting CodeBuddy, which then
+// carries on. The session stays alive across turns for exactly this reason.
 package acp
 
 import (
@@ -12,6 +20,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"1bot_test/internal/transport"
 )
@@ -45,21 +54,29 @@ type Client struct {
 
 	// promptMu serialises turns: one CodeBuddy process runs one turn at a time.
 	promptMu sync.Mutex
-	// eventMu guards curEvents, the callback for the turn in flight. It is held
-	// for microseconds only, never across network I/O, so the reader goroutine
-	// never blocks on it.
+
+	// Turn state, guarded by eventMu. The reader goroutine answers reverse
+	// requests (tool calls) through handleTool while a Turn waits in await,
+	// so both sides share this state through channels.
 	eventMu   sync.Mutex
 	curEvents func(transport.Event)
+	curTool   chan transport.ToolCall      // non-nil while a turn waits for tool calls
+	open      bool                         // a session/prompt is outstanding
+	openCh    chan wireMessage             // its result channel, when open
+	toolCalls map[string]json.RawMessage   // tool call id -> the reverse request id to answer
 }
 
 func New(opts Options) *Client {
 	return &Client{
-		opts:    opts,
-		pending: map[string]chan wireMessage{},
+		opts:      opts,
+		pending:   map[string]chan wireMessage{},
+		toolCalls: map[string]json.RawMessage{},
 	}
 }
 
-// Start launches the child and performs the ACP initialize handshake.
+// Start launches the child and performs the ACP initialize handshake. The
+// client declares fs and terminal capabilities so CodeBuddy delegates those
+// tools to the gateway instead of running them itself.
 func (c *Client) Start() error {
 	args := []string{"--acp"}
 	if c.opts.Model != "" {
@@ -134,13 +151,14 @@ func (c *Client) readLoop() {
 	}
 }
 
-// initialize performs the ACP handshake.
+// initialize performs the ACP handshake, declaring the fs and terminal
+// capabilities so the agent hands those tools back to the client.
 func (c *Client) initialize() error {
 	res, err := c.call("initialize", map[string]any{
 		"protocolVersion": 1,
 		"clientCapabilities": map[string]any{
-			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
-			"terminal": false,
+			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
+			"terminal": true,
 		},
 		"clientInfo": map[string]any{"name": "1bot_test", "version": "0.1"},
 	})
@@ -175,40 +193,152 @@ func (c *Client) newSession() error {
 	return nil
 }
 
-// Turn implements transport.Transport. It opens a fresh session, sends text
-// as the user prompt, and streams the reply through onEvent (called on the
-// reader goroutine, in order). Turns are serialised: one process, one turn.
-func (c *Client) Turn(text string, onEvent func(transport.Event)) (string, error) {
+// Turn implements transport.Transport. It first answers any tool results the
+// conversation carries, then either resumes the outstanding session/prompt or
+// starts a new one. A turn ends with StopToolUse when the agent asks for a
+// tool (handed out as EventToolCall), or StopEndTurn when it finishes.
+func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
 	c.promptMu.Lock()
 	defer c.promptMu.Unlock()
 
-	if err := c.newSession(); err != nil {
-		return "", err
+	if c.sessionID == "" {
+		if err := c.newSession(); err != nil {
+			return "", err
+		}
 	}
+
+	c.feedResults(messages)
 
 	c.eventMu.Lock()
 	c.curEvents = onEvent
+	c.curTool = make(chan transport.ToolCall, 1)
+	open := c.open
+	openCh := c.openCh
 	c.eventMu.Unlock()
 	defer func() {
 		c.eventMu.Lock()
 		c.curEvents = nil
+		c.curTool = nil
 		c.eventMu.Unlock()
 	}()
 
-	res, err := c.call("session/prompt", map[string]any{
-		"sessionId": c.sessionID,
-		"prompt": []any{
-			map[string]any{"type": "text", "text": text},
-		},
-	})
-	if err != nil {
+	if open {
+		return c.await(openCh, onEvent)
+	}
+
+	prompt := userText(messages)
+	id, ch := c.register()
+	req := wireMessage{
+		JSONRPC: "2.0",
+		ID:      json.RawMessage(id),
+		Method:  "session/prompt",
+		Params:  mustJSON(map[string]any{"sessionId": c.sessionID, "prompt": []any{map[string]any{"type": "text", "text": prompt}}}),
+	}
+	c.eventMu.Lock()
+	c.open = true
+	c.openCh = ch
+	c.eventMu.Unlock()
+	if err := c.write(req); err != nil {
+		c.eventMu.Lock()
+		c.open = false
+		c.eventMu.Unlock()
 		return "", err
 	}
-	var r struct {
-		StopReason string `json:"stopReason"`
+	return c.await(ch, onEvent)
+}
+
+// await waits for the outstanding session/prompt to resolve, or for the agent
+// to ask for a tool. On a tool call it reports the call and stops the turn at
+// StopToolUse, leaving the session/prompt outstanding for the next Turn.
+func (c *Client) await(ch chan wireMessage, onEvent func(transport.Event)) (string, error) {
+	c.eventMu.Lock()
+	tool := c.curTool
+	c.eventMu.Unlock()
+
+	select {
+	case m := <-ch:
+		c.eventMu.Lock()
+		c.open = false
+		c.eventMu.Unlock()
+		if m.Error != nil {
+			return "", fmt.Errorf("session/prompt: rpc error %d: %s", m.Error.Code, m.Error.Message)
+		}
+		var r struct {
+			StopReason string `json:"stopReason"`
+		}
+		_ = json.Unmarshal(m.Result, &r)
+		if r.StopReason == "" {
+			r.StopReason = transport.StopEndTurn
+		}
+		return r.StopReason, nil
+	case tc := <-tool:
+		onEvent(transport.Event{Kind: transport.EventToolCall, Call: &tc})
+		return transport.StopToolUse, nil
+	case <-time.After(300 * time.Second):
+		return "", fmt.Errorf("turn: timed out")
 	}
-	_ = json.Unmarshal(res.Result, &r)
-	return r.StopReason, nil
+}
+
+// feedResults answers the tool results the conversation carries. Each
+// PartToolResult is mapped back to the reverse request it answers and sent to
+// the waiting agent.
+func (c *Client) feedResults(messages []transport.Message) {
+	for _, msg := range messages {
+		for _, p := range msg.Parts {
+			if p.Kind == transport.PartToolResult && p.Result != nil {
+				c.answerResult(p.Result)
+			}
+		}
+	}
+}
+
+// answerResult responds to a reverse request with the tool's result.
+func (c *Client) answerResult(r *transport.ToolResult) {
+	c.eventMu.Lock()
+	reqID, ok := c.toolCalls[r.CallID]
+	if ok {
+		delete(c.toolCalls, r.CallID)
+	}
+	c.eventMu.Unlock()
+	if !ok {
+		return
+	}
+	result := map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": r.Content}},
+	}
+	if r.IsError {
+		result["isError"] = true
+	}
+	if err := c.respond(reqID, result); err != nil {
+		fmt.Fprintf(stderr, "answerResult: %v\n", err)
+	}
+}
+
+// userText flattens a conversation's text parts into the single user prompt
+// the transport sends for a new turn. Tool calls and results travel through
+// feedResults instead.
+func userText(messages []transport.Message) string {
+	var b strings.Builder
+	for _, msg := range messages {
+		for _, p := range msg.Parts {
+			if p.Kind == transport.PartText && strings.TrimSpace(p.Text) != "" {
+				b.WriteString(p.Text)
+				b.WriteString("\n\n")
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// register reserves an id and returns it with its result channel.
+func (c *Client) register() (string, chan wireMessage) {
+	c.pendMu.Lock()
+	c.nextID++
+	id := fmt.Sprintf("%d", c.nextID)
+	ch := make(chan wireMessage, 1)
+	c.pending[id] = ch
+	c.pendMu.Unlock()
+	return id, ch
 }
 
 // notify reduces a session/update notification to a transport.Event and hands
@@ -242,10 +372,14 @@ func (c *Client) notify(m wireMessage) {
 		}
 		ev = transport.Event{Kind: transport.EventThought, Text: p.Update.Content.Text}
 	case "tool_call":
-		if p.Update.ToolCall.Name == "" {
-			return
+		// The tool's arguments arrive in its own reverse request
+		// (fs/read_text_file &c), which handleTool turns into a full
+		// EventToolCall. This notification only names it; report nothing here
+		// to avoid a duplicate, empty call.
+		if p.Update.ToolCall.Name != "" && c.opts.Verbose {
+			fmt.Fprintf(stderr, "[tool] %s\n", p.Update.ToolCall.Name)
 		}
-		ev = transport.Event{Kind: transport.EventTool, Tool: p.Update.ToolCall.Name}
+		return
 	default:
 		return
 	}
@@ -258,11 +392,15 @@ func (c *Client) notify(m wireMessage) {
 	}
 }
 
-// answer replies to a request the agent sent us. We declare no fs/terminal
-// capabilities, so CodeBuddy uses its own tools; in practice only
-// session/request_permission arrives, which we auto-allow. Anything else gets
-// a method-not-found error so the agent never blocks on us.
+// answer replies to a request the agent sent us. Tool requests (the fs and
+// terminal capabilities we declared) become tool calls handed to the caller;
+// the result is answered on a later Turn. Everything else is answered as
+// before: permissions auto-allowed, unknown methods refused.
 func (c *Client) answer(m wireMessage) {
+	if isToolMethod(m.Method) {
+		c.handleTool(m)
+		return
+	}
 	if m.Method == "session/request_permission" {
 		var p struct {
 			Options []struct {
@@ -295,4 +433,53 @@ func (c *Client) answer(m wireMessage) {
 	}
 
 	_ = c.respondErr(m.ID, -32601, "method not supported by 1bot_test: "+m.Method)
+}
+
+// handleTool turns a reverse tool request into a transport.ToolCall and hands
+// it to the turn in flight. The reverse request stays unanswered until the
+// next Turn carries its result.
+func (c *Client) handleTool(m wireMessage) {
+	tc := transport.ToolCall{
+		ID:        string(m.ID),
+		Name:      toolName(m.Method),
+		Arguments: m.Params,
+	}
+
+	c.eventMu.Lock()
+	c.toolCalls[tc.ID] = m.ID
+	tool := c.curTool
+	c.eventMu.Unlock()
+
+	if tool != nil {
+		tool <- tc
+	}
+}
+
+// isToolMethod reports whether a reverse request is one of the fs/terminal
+// tools the client declared, i.e. a tool call to hand to the caller.
+func isToolMethod(method string) bool {
+	switch method {
+	case "fs/read_text_file", "fs/write_text_file", "terminal/create":
+		return true
+	}
+	return false
+}
+
+// toolName maps an ACP tool method to the neutral name the OpenAI front hands
+// back to the client.
+func toolName(method string) string {
+	switch method {
+	case "fs/read_text_file":
+		return "read_text_file"
+	case "fs/write_text_file":
+		return "write_text_file"
+	case "terminal/create":
+		return "terminal"
+	}
+	return method
+}
+
+func mustJSON(v any) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }

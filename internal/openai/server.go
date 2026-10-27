@@ -45,8 +45,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt := buildPrompt(req.Messages)
-	if prompt == "" {
+	messages := parseMessages(req.Messages)
+	if len(messages) == 0 {
 		http.Error(w, "no message content", http.StatusBadRequest)
 		return
 	}
@@ -56,10 +56,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		s.stream(w, prompt, model)
+		s.stream(w, messages, model)
 		return
 	}
-	s.single(w, prompt, model)
+	s.single(w, messages, model)
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {

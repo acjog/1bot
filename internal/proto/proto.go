@@ -5,7 +5,11 @@
 // Transport: stdio JSON-RPC, one frame per line (NDJSON).
 package proto
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"1bot_test/internal/transport"
+)
 
 // Frame is one JSON-RPC 2.0 message on the line stream.
 type Frame struct {
@@ -36,15 +40,11 @@ const (
 	MethodCancel = "cancel" // core -> plugin: abort a turn (reserved)
 )
 
-// Part is one prompt item.
-type Part struct {
-	Type string `json:"type"` // "text"
-	Text string `json:"text"`
-}
-
-// TurnParams is the params of MethodTurn.
+// TurnParams is the params of MethodTurn. It carries the whole conversation
+// in the gateway's neutral shape, so the plugin can feed a backend its
+// history (tool calls and results included) and resume it.
 type TurnParams struct {
-	Prompt []Part `json:"prompt"`
+	Messages []transport.Message `json:"messages"`
 }
 
 // TurnResult is the result of MethodTurn.
@@ -54,8 +54,8 @@ type TurnResult struct {
 
 // EventParams is the params of MethodEvent (a notification).
 type EventParams struct {
-	ID   int64  `json:"id"`             // which turn this event belongs to
-	Kind string `json:"kind"`           // text | thought | tool
-	Text string `json:"text,omitempty"` // set when kind is text/thought
-	Name string `json:"name,omitempty"` // tool name when kind is tool
+	ID   int64               `json:"id"`             // which turn this event belongs to
+	Kind string              `json:"kind"`           // text | thought | tool_call
+	Text string              `json:"text,omitempty"` // set when kind is text/thought
+	Call *transport.ToolCall `json:"call,omitempty"` // set when kind is tool_call
 }

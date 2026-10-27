@@ -2,9 +2,12 @@
 // speaks the v2 app-server protocol (thread/turn/item notifications) and
 // reduces the stream to transport.Event.
 //
-// The app-server protocol omits the "jsonrpc" header, uses thread/start and
-// turn/start to begin a turn, and streams replies as notifications:
-// item/agentMessage/delta carries the text; turn/completed carries the status.
+// Tool calls are handed back to the caller as transport.EventToolCall: an
+// item/started notification whose item is a commandExecution or mcpToolCall
+// becomes a ToolCall instead of a bare tool name, so the OpenAI front can
+// surface it as a tool_calls delta and the client can run it. The tool
+// results the next Turn carries are sent back as input items on the same
+// thread, which stays alive across turns.
 package codex
 
 import (
@@ -49,12 +52,14 @@ type Client struct {
 
 	// promptMu serialises turns: one codex process runs one turn at a time.
 	promptMu sync.Mutex
-	// eventMu guards the live-turn state below. Held only briefly, never
-	// across network I/O.
+
+	// Turn state, guarded by eventMu. The reader goroutine feeds item/started
+	// tool calls through curTool while a Turn waits in its select.
 	eventMu   sync.Mutex
 	curEvents func(transport.Event)
+	curTool   chan transport.ToolCall
 	curTurnID string
-	done      chan string // carries the turn status when turn/completed arrives
+	done      chan string
 }
 
 func New(opts Options) *Client {
@@ -176,10 +181,10 @@ func (c *Client) startThread() error {
 	return nil
 }
 
-// Turn implements transport.Transport. It starts a turn on the current thread
-// and streams the reply through onEvent until turn/completed arrives. Turns
-// are serialised: one process, one turn.
-func (c *Client) Turn(text string, onEvent func(transport.Event)) (string, error) {
+// Turn implements transport.Transport. It sends the conversation's text and
+// tool results as one turn's input on the current thread, then streams the
+// reply until turn/completed (StopEndTurn) or a tool call (StopToolUse).
+func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
 	c.promptMu.Lock()
 	defer c.promptMu.Unlock()
 
@@ -189,11 +194,11 @@ func (c *Client) Turn(text string, onEvent func(transport.Event)) (string, error
 		}
 	}
 
+	input := c.buildInput(messages)
+
 	res, err := c.call("turn/start", map[string]any{
 		"threadId": c.threadID,
-		"input": []any{
-			map[string]any{"type": "text", "text": text},
-		},
+		"input":    input,
 		"approvalPolicy": "never", // gateway context: auto-approve, like codebuddy -y
 	})
 	if err != nil {
@@ -210,24 +215,56 @@ func (c *Client) Turn(text string, onEvent func(transport.Event)) (string, error
 	c.curEvents = onEvent
 	c.curTurnID = r.Turn.ID
 	c.done = make(chan string, 1)
+	c.curTool = make(chan transport.ToolCall, 1)
 	c.eventMu.Unlock()
 	defer func() {
 		c.eventMu.Lock()
 		c.curEvents = nil
+		c.curTool = nil
 		c.curTurnID = ""
 		c.done = nil
 		c.eventMu.Unlock()
 	}()
 
+	c.eventMu.Lock()
+	tool := c.curTool
+	done := c.done
+	c.eventMu.Unlock()
+
 	select {
-	case status := <-c.done:
-		if status == "" {
-			status = "completed"
-		}
-		return status, nil
+	case <-done:
+		return transport.StopEndTurn, nil
+	case tc := <-tool:
+		onEvent(transport.Event{Kind: transport.EventToolCall, Call: &tc})
+		return transport.StopToolUse, nil
 	case <-time.After(300 * time.Second):
 		return "", fmt.Errorf("turn: timed out")
 	}
+}
+
+// buildInput turns the conversation into app-server input items: text parts
+// become text items, tool results become tool-result items so the thread can
+// carry on from the tools the caller ran.
+func (c *Client) buildInput(messages []transport.Message) []any {
+	var input []any
+	for _, msg := range messages {
+		for _, p := range msg.Parts {
+			switch p.Kind {
+			case transport.PartText:
+				input = append(input, map[string]any{"type": "text", "text": p.Text})
+			case transport.PartToolResult:
+				if p.Result == nil {
+					continue
+				}
+				input = append(input, map[string]any{
+					"type":       "tool_result",
+					"toolCallId": p.Result.CallID,
+					"content":    p.Result.Content,
+				})
+			}
+		}
+	}
+	return input
 }
 
 // notifyEvent reduces a server notification to a transport.Event and hands it
@@ -236,6 +273,7 @@ func (c *Client) notifyEvent(m wireMessage) {
 	c.eventMu.Lock()
 	turnID := c.curTurnID
 	fn := c.curEvents
+	tool := c.curTool
 	done := c.done
 	c.eventMu.Unlock()
 
@@ -264,24 +302,48 @@ func (c *Client) notifyEvent(m wireMessage) {
 
 	case "item/started":
 		var p struct {
-			TurnID string `json:"turnId"`
-			Item   struct {
-				Type    string `json:"type"`
-				Name    string `json:"name"`
-				Command string `json:"command"`
-			} `json:"item"`
+			TurnID string          `json:"turnId"`
+			Item   json.RawMessage `json:"item"`
 		}
 		_ = json.Unmarshal(m.Params, &p)
-		if p.TurnID != turnID || fn == nil {
+		if p.TurnID != turnID || tool == nil {
 			return
 		}
-		switch p.Item.Type {
-		case "mcpToolCall":
-			fn(transport.Event{Kind: transport.EventTool, Tool: p.Item.Name})
-		case "commandExecution":
-			fn(transport.Event{Kind: transport.EventTool, Tool: p.Item.Command})
+		if tc, ok := toolCallOf(p.Item); ok {
+			tool <- tc
 		}
 	}
+}
+
+// toolCallOf maps an app-server item to a neutral ToolCall. commandExecution
+// and mcpToolCall items are tool calls; the item's own JSON is kept as the
+// arguments so no field is lost.
+func toolCallOf(raw json.RawMessage) (transport.ToolCall, bool) {
+	var item struct {
+		ID      string `json:"id"`
+		Type    string `json:"type"`
+		Name    string `json:"name"`
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(raw, &item)
+
+	var name string
+	switch item.Type {
+	case "commandExecution":
+		name = "bash"
+	case "mcpToolCall":
+		name = item.Name
+	default:
+		return transport.ToolCall{}, false
+	}
+	if name == "" {
+		return transport.ToolCall{}, false
+	}
+	id := item.ID
+	if id == "" {
+		id = "call_" + name
+	}
+	return transport.ToolCall{ID: id, Name: name, Arguments: raw}, true
 }
 
 // answer replies to a request the server sent us. In practice app-server is

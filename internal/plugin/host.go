@@ -135,8 +135,8 @@ func (h *Host) dispatch(f proto.Frame) {
 		ev = transport.Event{Kind: transport.EventText, Text: p.Text}
 	case "thought":
 		ev = transport.Event{Kind: transport.EventThought, Text: p.Text}
-	case "tool":
-		ev = transport.Event{Kind: transport.EventTool, Tool: p.Name}
+	case "tool_call":
+		ev = transport.Event{Kind: transport.EventToolCall, Call: p.Call}
 	default:
 		return
 	}
@@ -155,7 +155,7 @@ func (h *Host) deliver(f proto.Frame) {
 
 // Turn implements transport.Transport. It sends one turn to the plugin and
 // streams events through onEvent until the plugin returns a result.
-func (h *Host) Turn(text string, onEvent func(transport.Event)) (string, error) {
+func (h *Host) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
 	h.pendMu.Lock()
 	h.nextID++
 	id := fmt.Sprintf("%d", h.nextID)
@@ -177,7 +177,7 @@ func (h *Host) Turn(text string, onEvent func(transport.Event)) (string, error) 
 		h.evMu.Unlock()
 	}()
 
-	params, _ := json.Marshal(proto.TurnParams{Prompt: []proto.Part{{Type: "text", Text: text}}})
+	params, _ := json.Marshal(proto.TurnParams{Messages: messages})
 	req := proto.Frame{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage(id),
