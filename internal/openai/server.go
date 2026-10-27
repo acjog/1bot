@@ -7,7 +7,10 @@ package openai
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"sync"
+	"time"
 
 	"1bot_test/internal/transport"
 )
@@ -17,10 +20,12 @@ type Server struct {
 	t       transport.Transport
 	model   string // default model when the request omits one
 	verbose bool
+	log     io.Writer // optional: append inbound requests (JSONL)
+	logMu   sync.Mutex
 }
 
-func New(t transport.Transport, model string, verbose bool) *Server {
-	return &Server{t: t, model: model, verbose: verbose}
+func New(t transport.Transport, model string, verbose bool, log io.Writer) *Server {
+	return &Server{t: t, model: model, verbose: verbose, log: log}
 }
 
 // Handler returns the HTTP routes.
@@ -39,8 +44,15 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.record(body)
+
 	var req chatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -86,6 +98,21 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.single(w, request, model)
+}
+
+// record appends one inbound request to the log writer (JSONL). It is a no-op
+// when no log is configured.
+func (s *Server) record(body []byte) {
+	if s.log == nil {
+		return
+	}
+	line, _ := json.Marshal(map[string]any{
+		"ts":      time.Now().Format(time.RFC3339Nano),
+		"request": json.RawMessage(body),
+	})
+	s.logMu.Lock()
+	_, _ = fmt.Fprintf(s.log, "%s\n", line)
+	s.logMu.Unlock()
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {

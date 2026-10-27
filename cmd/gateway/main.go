@@ -11,6 +11,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -30,7 +31,18 @@ func main() {
 	cwd := flag.String("cwd", "", "working directory handed to the agent (default: current)")
 	y := flag.Bool("y", false, "pass -y to codebuddy (skip permission prompts)")
 	v := flag.Bool("v", false, "verbose: dump plugin-protocol frames")
+	logPath := flag.String("log", "", "append inbound requests (JSONL) to this file; empty = disabled")
 	flag.Parse()
+
+	var logWriter io.Writer
+	if *logPath != "" {
+		f, err := os.OpenFile(*logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			fatalf("log: %v", err)
+		}
+		defer f.Close()
+		logWriter = f
+	}
 
 	pluginPath, err := resolvePlugin(*pluginArg)
 	if err != nil {
@@ -63,7 +75,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: openai.New(h, *model, *v).Handler(),
+		Handler: openai.New(h, *model, *v, logWriter).Handler(),
 	}
 	fmt.Fprintf(os.Stderr, "gateway: OpenAI endpoint on http://%s/v1/chat/completions (plugin=%s model=%q)\n", *addr, pluginPath, *model)
 
