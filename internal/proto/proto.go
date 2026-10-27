@@ -43,9 +43,7 @@ const (
 // TurnParams is the params of MethodTurn. It carries the whole conversation
 // in the gateway's neutral shape, so the plugin can feed a backend its
 // history (tool calls and results included) and resume it.
-type TurnParams struct {
-	Messages []transport.Message `json:"messages"`
-}
+type TurnParams = transport.Request
 
 // TurnResult is the result of MethodTurn.
 type TurnResult struct {

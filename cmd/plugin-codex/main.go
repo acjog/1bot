@@ -88,7 +88,7 @@ func main() {
 			write(proto.Frame{JSONRPC: "2.0", Method: proto.MethodEvent, Params: b})
 		}
 
-		stop, err := c.Turn(p.Messages, onEvent)
+		stop, err := c.Complete(p, onEvent)
 		if err != nil {
 			write(proto.Frame{JSONRPC: "2.0", ID: f.ID, Error: &proto.Error{Code: -32000, Message: err.Error()}})
 			continue

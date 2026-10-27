@@ -69,6 +69,8 @@ func (c *Client) call(method string, params any) (wireMessage, error) {
 		return m, nil
 	case <-time.After(300 * time.Second):
 		return wireMessage{}, fmt.Errorf("%s: timed out", method)
+	case <-c.closed:
+		return wireMessage{}, fmt.Errorf("%s: Codex app-server disconnected", method)
 	}
 }
 

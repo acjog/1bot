@@ -71,6 +71,10 @@ func main() {
 
 		var p proto.TurnParams
 		_ = json.Unmarshal(f.Params, &p)
+		if len(p.Tools) > 0 {
+			write(proto.Frame{JSONRPC: "2.0", ID: f.ID, Error: &proto.Error{Code: -32602, Message: "CodeBuddy adapter does not support client-declared tools; use plugin-codex"}})
+			continue
+		}
 
 		var turnID int64
 		_ = json.Unmarshal(f.ID, &turnID)

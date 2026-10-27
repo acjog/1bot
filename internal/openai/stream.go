@@ -38,7 +38,7 @@ func toolCallChunk(call *transport.ToolCall, index int) map[string]any {
 }
 
 // stream writes the transport's reply as an OpenAI SSE chunk stream.
-func (s *Server) stream(w http.ResponseWriter, messages []transport.Message, model string) {
+func (s *Server) stream(w http.ResponseWriter, req transport.Request, model string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -79,7 +79,7 @@ func (s *Server) stream(w http.ResponseWriter, messages []transport.Message, mod
 		}
 	}
 
-	stop, err := s.t.Turn(messages, onEvent)
+	stop, err := transport.Complete(s.t, req, onEvent)
 	if err != nil {
 		fmt.Fprintf(stderr, "turn: %v\n", err)
 		send(map[string]any{"content": "\n\n[error: " + err.Error() + "]"}, "stop")
@@ -95,7 +95,7 @@ func (s *Server) stream(w http.ResponseWriter, messages []transport.Message, mod
 }
 
 // single accumulates the transport's reply and returns one completion JSON.
-func (s *Server) single(w http.ResponseWriter, messages []transport.Message, model string) {
+func (s *Server) single(w http.ResponseWriter, req transport.Request, model string) {
 	var full strings.Builder
 	var calls []map[string]any
 	onEvent := func(ev transport.Event) {
@@ -112,7 +112,7 @@ func (s *Server) single(w http.ResponseWriter, messages []transport.Message, mod
 			})
 		}
 	}
-	stop, err := s.t.Turn(messages, onEvent)
+	stop, err := transport.Complete(s.t, req, onEvent)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

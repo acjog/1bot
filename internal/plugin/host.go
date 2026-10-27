@@ -156,6 +156,10 @@ func (h *Host) deliver(f proto.Frame) {
 // Turn implements transport.Transport. It sends one turn to the plugin and
 // streams events through onEvent until the plugin returns a result.
 func (h *Host) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
+	return h.Complete(transport.Request{Messages: messages}, onEvent)
+}
+
+func (h *Host) Complete(req transport.Request, onEvent func(transport.Event)) (string, error) {
 	h.pendMu.Lock()
 	h.nextID++
 	id := fmt.Sprintf("%d", h.nextID)
@@ -177,14 +181,14 @@ func (h *Host) Turn(messages []transport.Message, onEvent func(transport.Event))
 		h.evMu.Unlock()
 	}()
 
-	params, _ := json.Marshal(proto.TurnParams{Messages: messages})
-	req := proto.Frame{
+	params, _ := json.Marshal(req)
+	frame := proto.Frame{
 		JSONRPC: "2.0",
 		ID:      json.RawMessage(id),
 		Method:  proto.MethodTurn,
 		Params:  params,
 	}
-	if err := h.write(req); err != nil {
+	if err := h.write(frame); err != nil {
 		return "", err
 	}
 

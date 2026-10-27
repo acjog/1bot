@@ -9,7 +9,39 @@
 // formats.
 package transport
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
+
+// Tool is a function declared and executed by the API client.
+type Tool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// Request preserves request-scoped model and tool declarations across plugins.
+type Request struct {
+	Messages   []Message       `json:"messages"`
+	Model      string          `json:"model,omitempty"`
+	Tools      []Tool          `json:"tools,omitempty"`
+	ToolChoice json.RawMessage `json:"toolChoice,omitempty"`
+}
+
+type RequestTransport interface {
+	Complete(Request, func(Event)) (string, error)
+}
+
+func Complete(t Transport, req Request, onEvent func(Event)) (string, error) {
+	if rt, ok := t.(RequestTransport); ok {
+		return rt.Complete(req, onEvent)
+	}
+	if len(req.Tools) > 0 {
+		return "", fmt.Errorf("transport does not support client tools")
+	}
+	return t.Turn(req.Messages, onEvent)
+}
 
 // EventKind is one reduced category of a streamed reply. The upstream may
 // emit many more, but the gateway only needs these.
@@ -61,9 +93,8 @@ type Part struct {
 	Result *ToolResult `json:"result,omitempty"`
 }
 
-// Message is the gateway's neutral conversation message. A role of "user"
-// carries tool results and user text; "assistant" carries reply text and
-// tool calls.
+// Message preserves the client's system, developer, user, assistant, and tool
+// roles. Legacy adapters may also accept tool-result parts on user messages.
 type Message struct {
 	Role  string `json:"role"`
 	Parts []Part `json:"parts"`
@@ -78,14 +109,13 @@ const (
 
 // Transport turns one conversation (the whole history, tool calls and results
 // included) into a stream of Events plus a stop reason. Implementations own
-// their concurrency: a single Transport instance need not support concurrent
-// Turn calls, but it must keep the backend conversation alive across Turn
-// calls so tool results sent on the next turn can resume it.
+// concurrency and continuation state; independent conversations must not share
+// hidden history. RequestTransport additionally carries model/tool settings.
 type Transport interface {
 	// Start launches the transport and performs any handshake.
 	Start() error
 	// Turn advances the conversation one step. It streams the reply through
-	// onEvent (called sequentially, on the transport's reader goroutine) and
+	// onEvent (called sequentially) and
 	// returns StopEndTurn when the reply is final, or StopToolUse when the
 	// model has asked for tools whose results the next Turn will carry.
 	Turn(messages []Message, onEvent func(Event)) (stopReason string, err error)

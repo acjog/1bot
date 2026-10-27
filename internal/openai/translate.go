@@ -27,6 +27,11 @@ type chatRequest struct {
 	Model    string        `json:"model"`
 	Messages []chatMessage `json:"messages"`
 	Stream   bool          `json:"stream"`
+	Tools    []struct {
+		Type     string         `json:"type"`
+		Function transport.Tool `json:"function"`
+	} `json:"tools"`
+	ToolChoice json.RawMessage `json:"tool_choice"`
 }
 
 // parseMessages translates an OpenAI conversation into the gateway's neutral
@@ -49,10 +54,9 @@ func parseMessages(msgs []chatMessage) []transport.Message {
 				Kind: transport.PartToolResult,
 				Result: &transport.ToolResult{
 					CallID:  m.ToolCallID,
-					Content: strings.TrimSpace(contentText(m.Content)),
+					Content: contentText(m.Content),
 				},
 			})
-			role = "user" // tool results travel as user turns
 		case "assistant":
 			if text := strings.TrimSpace(contentText(m.Content)); text != "" {
 				parts = append(parts, transport.Part{Kind: transport.PartText, Text: text})

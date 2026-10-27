@@ -15,7 +15,7 @@ import (
 // Server is the OpenAI-compatible HTTP front.
 type Server struct {
 	t       transport.Transport
-	model   string // startup model; echoed, never switched
+	model   string // default model when the request omits one
 	verbose bool
 }
 
@@ -54,12 +54,38 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	if model == "" {
 		model = s.model
 	}
-
-	if req.Stream {
-		s.stream(w, messages, model)
+	request := transport.Request{Messages: messages, Model: model, ToolChoice: req.ToolChoice}
+	if len(req.ToolChoice) > 0 && string(req.ToolChoice) != "null" && string(req.ToolChoice) != `"auto"` && string(req.ToolChoice) != `"none"` {
+		http.Error(w, "tool_choice currently supports auto or none", http.StatusBadRequest)
 		return
 	}
-	s.single(w, messages, model)
+	seenTools := map[string]bool{}
+	for _, tool := range req.Tools {
+		if tool.Type != "function" || tool.Function.Name == "" {
+			http.Error(w, "only named function tools are supported", http.StatusBadRequest)
+			return
+		}
+		if seenTools[tool.Function.Name] {
+			http.Error(w, "duplicate function tool name", http.StatusBadRequest)
+			return
+		}
+		seenTools[tool.Function.Name] = true
+		if len(tool.Function.Parameters) == 0 {
+			tool.Function.Parameters = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		var schema map[string]any
+		if json.Unmarshal(tool.Function.Parameters, &schema) != nil || schema == nil {
+			http.Error(w, "function parameters must be a JSON schema object", http.StatusBadRequest)
+			return
+		}
+		request.Tools = append(request.Tools, tool.Function)
+	}
+
+	if req.Stream {
+		s.stream(w, request, model)
+		return
+	}
+	s.single(w, request, model)
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {

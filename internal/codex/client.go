@@ -1,23 +1,16 @@
-// Package codex drives OpenAI Codex CLI in `app-server` mode over stdio. It
-// speaks the v2 app-server protocol (thread/turn/item notifications) and
-// reduces the stream to transport.Event.
-//
-// Tool calls are handed back to the caller as transport.EventToolCall: an
-// item/started notification whose item is a commandExecution or mcpToolCall
-// becomes a ToolCall instead of a bare tool name. The turn then pauses; the
-// tool result the next Turn carries is reported back with an item/update on
-// the same turn, and Codex carries on. turn/start input takes user content
-// only (text, image, audio, skill, mention) — tool results are not input
-// items, they are item updates.
+// Package codex adapts app-server to tools owned and executed by API clients.
 package codex
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -27,58 +20,41 @@ import (
 
 var stderr = os.Stderr
 
-// Options configures a Codex app-server child process.
 type Options struct {
-	Bin     string // codex executable (name or resolved path)
-	Model   string // model id handed to thread/start
-	Verbose bool   // dump every JSON-RPC frame to stderr
-	Cwd     string // working directory handed to the agent
+	Bin, Model, Cwd string
+	Verbose         bool
+}
+type session struct {
+	threadID, turnID, model string
+	events                  chan wireMessage
+	history                 []transport.Message
+	tools                   []transport.Tool
+	call                    *transport.ToolCall
+	requestID               json.RawMessage
+	updated                 time.Time
 }
 
-// Client drives one long-lived `codex app-server` process. It implements
-// transport.Transport.
 type Client struct {
-	opts Options
-
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	scanner *bufio.Scanner
-
-	writeMu sync.Mutex
-	pendMu  sync.Mutex
-	pending map[string]chan wireMessage
-	nextID  int64
-
-	threadID string
-
-	// promptMu serialises turns: one codex process runs one turn at a time.
-	promptMu sync.Mutex
-
-	// Turn state, guarded by eventMu. The reader goroutine feeds item/started
-	// tool calls through curTool while a Turn waits in its select. done and
-	// turnID outlive a single Turn so a tool result can resume the same turn.
-	eventMu   sync.Mutex
-	curEvents func(transport.Event)
-	curTool   chan transport.ToolCall
-	turnID    string              // the open turn, "" when none
-	done      chan string         // receives the turn/completed status
-	itemIDs   map[string]string   // tool call id -> item id, to answer results
+	opts                               Options
+	cmd                                *exec.Cmd
+	stdin                              io.WriteCloser
+	scanner                            *bufio.Scanner
+	writeMu, pendMu, promptMu, eventMu sync.Mutex
+	pending                            map[string]chan wireMessage
+	nextID                             int64
+	closed                             chan struct{}
+	sessions                           map[string]*session
+	toolSessions                       map[string]*session
+	serverOverrides                    map[string]any
 }
 
 func New(opts Options) *Client {
-	return &Client{
-		opts:    opts,
-		pending: map[string]chan wireMessage{},
-		itemIDs: map[string]string{},
-	}
+	return &Client{opts: opts, pending: map[string]chan wireMessage{}, closed: make(chan struct{}),
+		sessions: map[string]*session{}, toolSessions: map[string]*session{}}
 }
-
-// Start launches the child and performs the app-server initialize handshake.
 func (c *Client) Start() error {
 	c.cmd = exec.Command(c.opts.Bin, "app-server")
-	c.cmd.Dir = c.opts.Cwd
-	c.cmd.Stderr = stderr
-
+	c.cmd.Dir, c.cmd.Stderr = c.opts.Cwd, stderr
 	in, err := c.cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -87,18 +63,52 @@ func (c *Client) Start() error {
 	if err != nil {
 		return err
 	}
-	if err := c.cmd.Start(); err != nil {
-		return fmt.Errorf("starting %s app-server: %w", c.opts.Bin, err)
+	if err = c.cmd.Start(); err != nil {
+		return fmt.Errorf("starting app-server: %w", err)
 	}
 	c.stdin = in
 	c.scanner = bufio.NewScanner(out)
 	c.scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	go c.readLoop()
-
-	return c.initialize()
+	if _, err = c.call("initialize", map[string]any{
+		"clientInfo":   map[string]any{"name": "1bot_gateway", "version": "0.2"},
+		"capabilities": map[string]any{"experimentalApi": true},
+	}); err != nil {
+		_ = c.Close()
+		return err
+	}
+	if err = c.notify("initialized", map[string]any{}); err != nil {
+		_ = c.Close()
+		return err
+	}
+	// Explicitly disable configured server MCPs as well as the automatic app
+	// connector. Empty configuration tables alone would merge with host tables.
+	res, err := c.call("config/read", map[string]any{"cwd": c.opts.Cwd, "includeLayers": false})
+	if err != nil {
+		_ = c.Close()
+		return err
+	}
+	var config struct {
+		Config map[string]json.RawMessage `json:"config"`
+	}
+	if err = json.Unmarshal(res.Result, &config); err != nil {
+		_ = c.Close()
+		return err
+	}
+	c.serverOverrides = map[string]any{}
+	for _, key := range []string{"mcp_servers", "plugins"} {
+		var entries map[string]json.RawMessage
+		_ = json.Unmarshal(config.Config[key], &entries)
+		disabled := map[string]any{}
+		for name := range entries {
+			disabled[name] = map[string]any{"enabled": false}
+		}
+		if len(disabled) > 0 {
+			c.serverOverrides[key] = disabled
+		}
+	}
+	return nil
 }
-
-// Close kills the child and waits for it to exit.
 func (c *Client) Close() error {
 	c.writeMu.Lock()
 	if c.stdin != nil {
@@ -107,298 +117,350 @@ func (c *Client) Close() error {
 	c.writeMu.Unlock()
 	if c.cmd != nil && c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
-	}
-	if c.cmd != nil {
 		_ = c.cmd.Wait()
 	}
 	return nil
 }
-
-// readLoop consumes the child's stdout and dispatches frames.
 func (c *Client) readLoop() {
+	defer close(c.closed)
 	for c.scanner.Scan() {
 		line := c.scanner.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
-			continue
-		}
 		var m wireMessage
-		if err := json.Unmarshal(line, &m); err != nil {
-			fmt.Fprintf(stderr, "codex: bad JSON: %v: %s\n", err, line)
+		if json.Unmarshal(line, &m) != nil {
 			continue
 		}
 		if c.opts.Verbose {
-			fmt.Fprintf(stderr, "[<-] %s\n", line)
+			fmt.Fprintf(stderr, "[codex <-] %s\n", line)
 		}
-
-		switch {
-		case m.hasID() && m.Method == "":
-			c.deliver(m) // a response to one of our requests
-		case m.hasID():
-			c.answer(m) // a request the server sent us (rare in app-server)
-		default:
-			c.notifyEvent(m) // a notification (streaming event)
+		if m.hasID() && m.Method == "" {
+			c.deliver(m)
+			continue
+		}
+		var p struct {
+			ThreadID string `json:"threadId"`
+		}
+		_ = json.Unmarshal(m.Params, &p)
+		c.eventMu.Lock()
+		s := c.sessions[p.ThreadID]
+		c.eventMu.Unlock()
+		if s != nil && (m.Method == "item/agentMessage/delta" || m.Method == "turn/completed" || m.Method == "item/tool/call") {
+			s.events <- m
+		} else if m.hasID() {
+			_ = c.write(wireMessage{ID: m.ID, Error: &rpcError{Code: -32601, Message: "server-owned tools are disabled"}})
 		}
 	}
 }
 
-// initialize performs the app-server handshake: initialize request, then an
-// initialized notification.
-func (c *Client) initialize() error {
-	res, err := c.call("initialize", map[string]any{
-		"clientInfo": map[string]any{
-			"name":    "1bot_test",
-			"version": "0.1",
+const gatewayInstructions = `You are a model behind an API gateway. The API client owns the conversation and every tool.
+Use only supplied client tools. Never execute commands, read files, browse, or inspect the gateway host.
+The gateway host operating system, paths, shell, and working directory are not the client's environment.
+Use environment information supplied by the client; if missing, ask instead of guessing.
+Return tool calls for the client to execute and use its returned results. Do not claim to have executed them yourself.`
+
+func (c *Client) startSession(req transport.Request) (*session, error) {
+	tools := make([]any, 0, len(req.Tools))
+	for _, t := range req.Tools {
+		tools = append(tools, map[string]any{"type": "function", "name": t.Name, "description": t.Description, "inputSchema": t.Parameters})
+	}
+	base, developer := gatewayInstructions, ""
+	for _, m := range req.Messages {
+		for _, p := range m.Parts {
+			if p.Kind != transport.PartText {
+				continue
+			}
+			if m.Role == "system" {
+				base += "\n\n" + p.Text
+			}
+			if m.Role == "developer" {
+				developer += "\n\n" + p.Text
+			}
+		}
+	}
+	params := map[string]any{
+		"ephemeral": true, "environments": []any{}, "dynamicTools": tools,
+		"baseInstructions": base, "developerInstructions": strings.TrimSpace(developer),
+		"approvalPolicy": "never", "allowProviderModelFallback": false,
+		"config": map[string]any{
+			"features.shell_tool": false, "features.unified_exec": false,
+			"features.apps": false, "features.plugins": false, "features.multi_agent": false,
+			"features.browser_use": false, "features.computer_use": false, "features.image_generation": false,
+			"features.skill_search": false, "features.skip_host_skill_discovery": true,
+			"features.view_image": false, "features.sleep_tool": false, "features.goals": false,
+			"features.hooks": false, "features.memories": false, "features.code_mode": false,
+			"web_search": "disabled", "agents.enabled": false, "project_doc_max_bytes": 0,
 		},
-		"capabilities": map[string]any{},
-	})
-	if err != nil {
-		return err
 	}
-	var r struct {
-		UserAgent     string `json:"userAgent"`
-		PlatformFamily string `json:"platformFamily"`
+	for key, value := range c.serverOverrides {
+		params["config"].(map[string]any)[key] = value
 	}
-	_ = json.Unmarshal(res.Result, &r)
-	fmt.Fprintf(stderr, "codex: connected (%s, %s)\n", r.UserAgent, r.PlatformFamily)
-	return c.notify("initialized", map[string]any{})
-}
-
-// startThread creates a conversation thread and remembers its id.
-func (c *Client) startThread() error {
-	params := map[string]any{}
-	if c.opts.Model != "" {
-		params["model"] = c.opts.Model
+	if req.Model != "" {
+		params["model"] = req.Model
 	}
 	res, err := c.call("thread/start", params)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var r struct {
 		Thread struct {
 			ID string `json:"id"`
 		} `json:"thread"`
 	}
-	if err := json.Unmarshal(res.Result, &r); err != nil {
-		return fmt.Errorf("thread/start result: %w", err)
+	if err = json.Unmarshal(res.Result, &r); err != nil {
+		return nil, err
 	}
-	c.threadID = r.Thread.ID
-	return nil
+	if r.Thread.ID == "" {
+		return nil, fmt.Errorf("thread/start returned no thread ID")
+	}
+	s := &session{threadID: r.Thread.ID, events: make(chan wireMessage, 256), history: req.Messages, tools: req.Tools, model: req.Model, updated: time.Now()}
+	c.eventMu.Lock()
+	c.sessions[s.threadID] = s
+	c.eventMu.Unlock()
+	return s, nil
+}
+func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
+	return c.Complete(transport.Request{Messages: messages}, onEvent)
 }
 
-// Turn implements transport.Transport. It answers any tool results the
-// conversation carries, then resumes the open turn or starts a new one. A
-// turn ends with StopToolUse when Codex asks for a tool (handed out as
-// EventToolCall), or StopEndTurn when it finishes.
-func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
+// Complete starts isolated threads, or resumes the thread addressed by a tool result.
+func (c *Client) Complete(req transport.Request, onEvent func(transport.Event)) (string, error) {
 	c.promptMu.Lock()
 	defer c.promptMu.Unlock()
-
-	if c.threadID == "" {
-		if err := c.startThread(); err != nil {
-			return "", err
+	if req.Model == "" {
+		req.Model = c.opts.Model
+	}
+	if len(req.ToolChoice) > 0 && string(req.ToolChoice) != "null" && string(req.ToolChoice) != `"auto"` && string(req.ToolChoice) != `"none"` {
+		return "", fmt.Errorf("tool_choice supports auto or none in the Codex adapter")
+	}
+	if string(req.ToolChoice) == `"none"` {
+		req.Tools = nil
+	}
+	if len(req.Messages) == 0 {
+		return "", fmt.Errorf("no messages")
+	}
+	c.reapSessions()
+	last := req.Messages[len(req.Messages)-1]
+	var result *transport.ToolResult
+	for _, p := range last.Parts {
+		if p.Kind == transport.PartToolResult {
+			result = p.Result
 		}
 	}
-
-	c.eventMu.Lock()
-	c.curEvents = onEvent
-	c.curTool = make(chan transport.ToolCall, 1)
-	turnOpen := c.turnID != ""
-	c.eventMu.Unlock()
-	defer func() {
+	var s *session
+	if result != nil {
 		c.eventMu.Lock()
-		c.curEvents = nil
-		c.curTool = nil
+		s = c.toolSessions[result.CallID]
 		c.eventMu.Unlock()
-	}()
-
-	c.feedResults(messages)
-
-	if turnOpen {
-		return c.awaitTurn(onEvent)
-	}
-
-	input := c.buildInput(messages)
-	res, err := c.call("turn/start", map[string]any{
-		"threadId":       c.threadID,
-		"input":          input,
-		"approvalPolicy": "never", // gateway context: auto-approve, like codebuddy -y
-	})
-	if err != nil {
-		return "", err
-	}
-	var r struct {
-		Turn struct {
-			ID string `json:"id"`
-		} `json:"turn"`
-	}
-	_ = json.Unmarshal(res.Result, &r)
-
-	c.eventMu.Lock()
-	c.turnID = r.Turn.ID
-	c.done = make(chan string, 1)
-	c.eventMu.Unlock()
-
-	return c.awaitTurn(onEvent)
-}
-
-// awaitTurn waits for the open turn to complete or to ask for a tool. On a
-// tool call it reports the call and stops the turn at StopToolUse, leaving
-// the turn open for the next Turn's result.
-func (c *Client) awaitTurn(onEvent func(transport.Event)) (string, error) {
-	c.eventMu.Lock()
-	done := c.done
-	tool := c.curTool
-	c.eventMu.Unlock()
-
-	select {
-	case <-done:
+		if s == nil {
+			return "", fmt.Errorf("unknown or expired tool_call_id %q", result.CallID)
+		}
+		if err := validateContinuation(s, req, result.CallID); err != nil {
+			return "", err
+		}
+		payload, _ := json.Marshal(map[string]any{"contentItems": []any{map[string]any{"type": "inputText", "text": result.Content}}, "success": !result.IsError})
+		if err := c.write(wireMessage{ID: s.requestID, Result: payload}); err != nil {
+			c.retire(s)
+			return "", err
+		}
 		c.eventMu.Lock()
-		c.turnID = ""
-		c.done = nil
+		delete(c.toolSessions, result.CallID)
 		c.eventMu.Unlock()
-		return transport.StopEndTurn, nil
-	case tc := <-tool:
-		onEvent(transport.Event{Kind: transport.EventToolCall, Call: &tc})
-		return transport.StopToolUse, nil
-	case <-time.After(300 * time.Second):
-		return "", fmt.Errorf("turn: timed out")
-	}
-}
-
-// buildInput turns the conversation into app-server input items. Only user
-// content (text) goes here; tool results are reported back as item updates
-// instead, so they are not input items.
-func (c *Client) buildInput(messages []transport.Message) []any {
-	var input []any
-	for _, msg := range messages {
-		for _, p := range msg.Parts {
-			if p.Kind == transport.PartText && strings.TrimSpace(p.Text) != "" {
+		s.call = nil
+		s.history = req.Messages
+	} else {
+		if last.Role != "user" {
+			return "", fmt.Errorf("new requests must end with a user message; tool results require a live tool_call_id")
+		}
+		c.eventMu.Lock()
+		count := len(c.sessions)
+		c.eventMu.Unlock()
+		if count >= 128 {
+			return "", fmt.Errorf("too many pending tool conversations")
+		}
+		var err error
+		s, err = c.startSession(req)
+		if err != nil {
+			return "", err
+		}
+		if items := historyItems(req.Messages[:len(req.Messages)-1]); len(items) > 0 {
+			if _, err = c.call("thread/inject_items", map[string]any{"threadId": s.threadID, "items": items}); err != nil {
+				c.retire(s)
+				return "", err
+			}
+		}
+		input := []any{}
+		for _, p := range last.Parts {
+			if p.Kind == transport.PartText {
 				input = append(input, map[string]any{"type": "text", "text": p.Text})
 			}
 		}
+		res, err := c.call("turn/start", map[string]any{"threadId": s.threadID, "input": input, "environments": []any{}})
+		if err != nil {
+			c.retire(s)
+			return "", err
+		}
+		var r struct {
+			Turn struct {
+				ID string `json:"id"`
+			} `json:"turn"`
+		}
+		_ = json.Unmarshal(res.Result, &r)
+		s.turnID = r.Turn.ID
 	}
-	return input
+	stop, err := c.await(s, onEvent)
+	if err != nil || stop != transport.StopToolUse {
+		c.retire(s)
+	}
+	return stop, err
+}
+func validateContinuation(s *session, req transport.Request, callID string) error {
+	n := len(s.history)
+	if len(req.Messages) != n+2 || !semanticEqual(req.Messages[:n], s.history) || req.Model != s.model || !semanticEqual(req.Tools, s.tools) {
+		return fmt.Errorf("tool result conversation, model, or tools do not match the original request")
+	}
+	assistant := req.Messages[n]
+	if assistant.Role != "assistant" {
+		return fmt.Errorf("tool result must follow its assistant tool call")
+	}
+	for _, p := range assistant.Parts {
+		if p.Call != nil && p.Call.ID == callID && p.Call.Name == s.call.Name && jsonEqual(p.Call.Arguments, s.call.Arguments) {
+			return nil
+		}
+	}
+	return fmt.Errorf("tool result does not match the pending assistant tool call")
+}
+func jsonEqual(a, b json.RawMessage) bool {
+	var x, y any
+	return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && reflect.DeepEqual(x, y)
 }
 
-// feedResults reports the tool results the conversation carries back to the
-// items they answer.
-func (c *Client) feedResults(messages []transport.Message) {
-	for _, msg := range messages {
-		for _, p := range msg.Parts {
-			if p.Kind == transport.PartToolResult && p.Result != nil {
-				c.answerResult(p.Result)
+func semanticEqual(a, b any) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return jsonEqual(x, y)
+}
+
+// historyItems preserves roles and native function call/output items.
+func historyItems(messages []transport.Message) []any {
+	var items []any
+	for _, m := range messages {
+		// Codex may normalize injected instruction messages away. Supply them
+		// through baseInstructions/developerInstructions at thread creation.
+		if m.Role == "system" || m.Role == "developer" {
+			continue
+		}
+		for _, p := range m.Parts {
+			switch p.Kind {
+			case transport.PartText:
+				kind := "input_text"
+				if m.Role == "assistant" {
+					kind = "output_text"
+				}
+				items = append(items, map[string]any{"type": "message", "role": m.Role, "content": []any{map[string]any{"type": kind, "text": p.Text}}})
+			case transport.PartToolCall:
+				if p.Call != nil {
+					items = append(items, map[string]any{"type": "function_call", "call_id": p.Call.ID, "name": p.Call.Name, "arguments": string(p.Call.Arguments)})
+				}
+			case transport.PartToolResult:
+				if p.Result != nil {
+					items = append(items, map[string]any{"type": "function_call_output", "call_id": p.Result.CallID, "output": p.Result.Content})
+				}
 			}
 		}
 	}
+	return items
 }
-
-// answerResult reports a tool result back to Codex with an item/update.
-func (c *Client) answerResult(r *transport.ToolResult) {
+func (c *Client) await(s *session, onEvent func(transport.Event)) (string, error) {
+	timer := time.NewTimer(300 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case m := <-s.events:
+			switch m.Method {
+			case "item/agentMessage/delta":
+				var p struct {
+					Delta  string `json:"delta"`
+					TurnID string `json:"turnId"`
+				}
+				_ = json.Unmarshal(m.Params, &p)
+				if p.TurnID == s.turnID && p.Delta != "" {
+					onEvent(transport.Event{Kind: transport.EventText, Text: p.Delta})
+				}
+			case "item/tool/call":
+				var p struct {
+					Tool      string          `json:"tool"`
+					Arguments json.RawMessage `json:"arguments"`
+					TurnID    string          `json:"turnId"`
+				}
+				_ = json.Unmarshal(m.Params, &p)
+				allowed := false
+				for _, t := range s.tools {
+					if t.Name == p.Tool {
+						allowed = true
+					}
+				}
+				if !allowed || p.TurnID != s.turnID {
+					return "", fmt.Errorf("upstream requested an undeclared client tool %q", p.Tool)
+				}
+				var token [16]byte
+				if _, err := rand.Read(token[:]); err != nil {
+					return "", err
+				}
+				tc := &transport.ToolCall{ID: "call_" + hex.EncodeToString(token[:]), Name: p.Tool, Arguments: p.Arguments}
+				s.call, s.requestID, s.updated = tc, m.ID, time.Now()
+				c.eventMu.Lock()
+				c.toolSessions[tc.ID] = s
+				c.eventMu.Unlock()
+				onEvent(transport.Event{Kind: transport.EventToolCall, Call: tc})
+				return transport.StopToolUse, nil
+			case "turn/completed":
+				var p struct {
+					Turn struct {
+						ID     string `json:"id"`
+						Status string `json:"status"`
+						Error  *struct {
+							Message string `json:"message"`
+						} `json:"error"`
+					} `json:"turn"`
+				}
+				_ = json.Unmarshal(m.Params, &p)
+				if p.Turn.ID != s.turnID {
+					continue
+				}
+				if p.Turn.Status != "completed" {
+					message := ""
+					if p.Turn.Error != nil {
+						message = p.Turn.Error.Message
+					}
+					return "", fmt.Errorf("Codex turn %s: %s", p.Turn.Status, message)
+				}
+				return transport.StopEndTurn, nil
+			}
+		case <-c.closed:
+			return "", fmt.Errorf("Codex app-server disconnected")
+		case <-timer.C:
+			return "", fmt.Errorf("Codex turn timed out")
+		}
+	}
+}
+func (c *Client) retire(s *session) {
 	c.eventMu.Lock()
-	itemID, ok := c.itemIDs[r.CallID]
-	if ok {
-		delete(c.itemIDs, r.CallID)
+	delete(c.sessions, s.threadID)
+	if s.call != nil {
+		delete(c.toolSessions, s.call.ID)
 	}
 	c.eventMu.Unlock()
-	if !ok {
-		return
-	}
-	params := map[string]any{"itemId": itemID, "output": r.Content}
-	if r.IsError {
-		params["isError"] = true
-	}
-	if err := c.notify("item/update", params); err != nil {
-		fmt.Fprintf(stderr, "answerResult: %v\n", err)
-	}
+	_, _ = c.call("thread/unsubscribe", map[string]any{"threadId": s.threadID})
 }
-
-// notifyEvent reduces a server notification to a transport.Event and hands it
-// to the turn in flight. It runs on the reader goroutine, in order.
-func (c *Client) notifyEvent(m wireMessage) {
+func (c *Client) reapSessions() {
 	c.eventMu.Lock()
-	turnID := c.turnID
-	fn := c.curEvents
-	tool := c.curTool
-	done := c.done
+	var expired []*session
+	for _, s := range c.sessions {
+		if time.Since(s.updated) > 15*time.Minute {
+			expired = append(expired, s)
+		}
+	}
 	c.eventMu.Unlock()
-
-	switch m.Method {
-	case "item/agentMessage/delta":
-		var p struct {
-			TurnID string `json:"turnId"`
-			Delta  string `json:"delta"`
-		}
-		_ = json.Unmarshal(m.Params, &p)
-		if p.TurnID == turnID && fn != nil && p.Delta != "" {
-			fn(transport.Event{Kind: transport.EventText, Text: p.Delta})
-		}
-
-	case "turn/completed":
-		var p struct {
-			Turn struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
-			} `json:"turn"`
-		}
-		_ = json.Unmarshal(m.Params, &p)
-		if p.Turn.ID == turnID && done != nil {
-			done <- p.Turn.Status
-		}
-
-	case "item/started":
-		var p struct {
-			TurnID string          `json:"turnId"`
-			Item   json.RawMessage `json:"item"`
-		}
-		_ = json.Unmarshal(m.Params, &p)
-		if p.TurnID != turnID || tool == nil {
-			return
-		}
-		tc, itemID, ok := toolCallOf(p.Item)
-		if !ok {
-			return
-		}
-		c.eventMu.Lock()
-		c.itemIDs[tc.ID] = itemID
-		c.eventMu.Unlock()
-		tool <- tc
+	for _, s := range expired {
+		c.retire(s)
 	}
-}
-
-// toolCallOf maps an app-server item to a neutral ToolCall. commandExecution
-// and mcpToolCall items are tool calls; the item's own JSON is kept as the
-// arguments so no field is lost. The item id is returned so a later result
-// can be reported back with item/update.
-func toolCallOf(raw json.RawMessage) (transport.ToolCall, string, bool) {
-	var item struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Name    string `json:"name"`
-		Command string `json:"command"`
-	}
-	_ = json.Unmarshal(raw, &item)
-
-	var name string
-	switch item.Type {
-	case "commandExecution":
-		name = "bash"
-	case "mcpToolCall":
-		name = item.Name
-	default:
-		return transport.ToolCall{}, "", false
-	}
-	if name == "" {
-		return transport.ToolCall{}, "", false
-	}
-	id := item.ID
-	if id == "" {
-		id = "call_" + name
-	}
-	return transport.ToolCall{ID: id, Name: name, Arguments: raw}, item.ID, true
-}
-
-// answer replies to a request the server sent us. In practice app-server is
-// mostly one-directional (client -> server), but a stray request must not hang.
-func (c *Client) answer(m wireMessage) {
-	_ = c.write(wireMessage{ID: m.ID, Error: &rpcError{Code: -32601, Message: "method not supported by 1bot_test: " + m.Method}})
 }
