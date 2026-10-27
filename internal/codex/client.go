@@ -4,10 +4,11 @@
 //
 // Tool calls are handed back to the caller as transport.EventToolCall: an
 // item/started notification whose item is a commandExecution or mcpToolCall
-// becomes a ToolCall instead of a bare tool name, so the OpenAI front can
-// surface it as a tool_calls delta and the client can run it. The tool
-// results the next Turn carries are sent back as input items on the same
-// thread, which stays alive across turns.
+// becomes a ToolCall instead of a bare tool name. The turn then pauses; the
+// tool result the next Turn carries is reported back with an item/update on
+// the same turn, and Codex carries on. turn/start input takes user content
+// only (text, image, audio, skill, mention) — tool results are not input
+// items, they are item updates.
 package codex
 
 import (
@@ -54,18 +55,21 @@ type Client struct {
 	promptMu sync.Mutex
 
 	// Turn state, guarded by eventMu. The reader goroutine feeds item/started
-	// tool calls through curTool while a Turn waits in its select.
+	// tool calls through curTool while a Turn waits in its select. done and
+	// turnID outlive a single Turn so a tool result can resume the same turn.
 	eventMu   sync.Mutex
 	curEvents func(transport.Event)
 	curTool   chan transport.ToolCall
-	curTurnID string
-	done      chan string
+	turnID    string              // the open turn, "" when none
+	done      chan string         // receives the turn/completed status
+	itemIDs   map[string]string   // tool call id -> item id, to answer results
 }
 
 func New(opts Options) *Client {
 	return &Client{
 		opts:    opts,
 		pending: map[string]chan wireMessage{},
+		itemIDs: map[string]string{},
 	}
 }
 
@@ -181,9 +185,10 @@ func (c *Client) startThread() error {
 	return nil
 }
 
-// Turn implements transport.Transport. It sends the conversation's text and
-// tool results as one turn's input on the current thread, then streams the
-// reply until turn/completed (StopEndTurn) or a tool call (StopToolUse).
+// Turn implements transport.Transport. It answers any tool results the
+// conversation carries, then resumes the open turn or starts a new one. A
+// turn ends with StopToolUse when Codex asks for a tool (handed out as
+// EventToolCall), or StopEndTurn when it finishes.
 func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
 	c.promptMu.Lock()
 	defer c.promptMu.Unlock()
@@ -194,11 +199,28 @@ func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event
 		}
 	}
 
-	input := c.buildInput(messages)
+	c.eventMu.Lock()
+	c.curEvents = onEvent
+	c.curTool = make(chan transport.ToolCall, 1)
+	turnOpen := c.turnID != ""
+	c.eventMu.Unlock()
+	defer func() {
+		c.eventMu.Lock()
+		c.curEvents = nil
+		c.curTool = nil
+		c.eventMu.Unlock()
+	}()
 
+	c.feedResults(messages)
+
+	if turnOpen {
+		return c.awaitTurn(onEvent)
+	}
+
+	input := c.buildInput(messages)
 	res, err := c.call("turn/start", map[string]any{
-		"threadId": c.threadID,
-		"input":    input,
+		"threadId":       c.threadID,
+		"input":          input,
 		"approvalPolicy": "never", // gateway context: auto-approve, like codebuddy -y
 	})
 	if err != nil {
@@ -212,27 +234,28 @@ func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event
 	_ = json.Unmarshal(res.Result, &r)
 
 	c.eventMu.Lock()
-	c.curEvents = onEvent
-	c.curTurnID = r.Turn.ID
+	c.turnID = r.Turn.ID
 	c.done = make(chan string, 1)
-	c.curTool = make(chan transport.ToolCall, 1)
 	c.eventMu.Unlock()
-	defer func() {
-		c.eventMu.Lock()
-		c.curEvents = nil
-		c.curTool = nil
-		c.curTurnID = ""
-		c.done = nil
-		c.eventMu.Unlock()
-	}()
 
+	return c.awaitTurn(onEvent)
+}
+
+// awaitTurn waits for the open turn to complete or to ask for a tool. On a
+// tool call it reports the call and stops the turn at StopToolUse, leaving
+// the turn open for the next Turn's result.
+func (c *Client) awaitTurn(onEvent func(transport.Event)) (string, error) {
 	c.eventMu.Lock()
-	tool := c.curTool
 	done := c.done
+	tool := c.curTool
 	c.eventMu.Unlock()
 
 	select {
 	case <-done:
+		c.eventMu.Lock()
+		c.turnID = ""
+		c.done = nil
+		c.eventMu.Unlock()
 		return transport.StopEndTurn, nil
 	case tc := <-tool:
 		onEvent(transport.Event{Kind: transport.EventToolCall, Call: &tc})
@@ -242,36 +265,58 @@ func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event
 	}
 }
 
-// buildInput turns the conversation into app-server input items: text parts
-// become text items, tool results become tool-result items so the thread can
-// carry on from the tools the caller ran.
+// buildInput turns the conversation into app-server input items. Only user
+// content (text) goes here; tool results are reported back as item updates
+// instead, so they are not input items.
 func (c *Client) buildInput(messages []transport.Message) []any {
 	var input []any
 	for _, msg := range messages {
 		for _, p := range msg.Parts {
-			switch p.Kind {
-			case transport.PartText:
+			if p.Kind == transport.PartText && strings.TrimSpace(p.Text) != "" {
 				input = append(input, map[string]any{"type": "text", "text": p.Text})
-			case transport.PartToolResult:
-				if p.Result == nil {
-					continue
-				}
-				input = append(input, map[string]any{
-					"type":       "tool_result",
-					"toolCallId": p.Result.CallID,
-					"content":    p.Result.Content,
-				})
 			}
 		}
 	}
 	return input
 }
 
+// feedResults reports the tool results the conversation carries back to the
+// items they answer.
+func (c *Client) feedResults(messages []transport.Message) {
+	for _, msg := range messages {
+		for _, p := range msg.Parts {
+			if p.Kind == transport.PartToolResult && p.Result != nil {
+				c.answerResult(p.Result)
+			}
+		}
+	}
+}
+
+// answerResult reports a tool result back to Codex with an item/update.
+func (c *Client) answerResult(r *transport.ToolResult) {
+	c.eventMu.Lock()
+	itemID, ok := c.itemIDs[r.CallID]
+	if ok {
+		delete(c.itemIDs, r.CallID)
+	}
+	c.eventMu.Unlock()
+	if !ok {
+		return
+	}
+	params := map[string]any{"itemId": itemID, "output": r.Content}
+	if r.IsError {
+		params["isError"] = true
+	}
+	if err := c.notify("item/update", params); err != nil {
+		fmt.Fprintf(stderr, "answerResult: %v\n", err)
+	}
+}
+
 // notifyEvent reduces a server notification to a transport.Event and hands it
 // to the turn in flight. It runs on the reader goroutine, in order.
 func (c *Client) notifyEvent(m wireMessage) {
 	c.eventMu.Lock()
-	turnID := c.curTurnID
+	turnID := c.turnID
 	fn := c.curEvents
 	tool := c.curTool
 	done := c.done
@@ -309,16 +354,22 @@ func (c *Client) notifyEvent(m wireMessage) {
 		if p.TurnID != turnID || tool == nil {
 			return
 		}
-		if tc, ok := toolCallOf(p.Item); ok {
-			tool <- tc
+		tc, itemID, ok := toolCallOf(p.Item)
+		if !ok {
+			return
 		}
+		c.eventMu.Lock()
+		c.itemIDs[tc.ID] = itemID
+		c.eventMu.Unlock()
+		tool <- tc
 	}
 }
 
 // toolCallOf maps an app-server item to a neutral ToolCall. commandExecution
 // and mcpToolCall items are tool calls; the item's own JSON is kept as the
-// arguments so no field is lost.
-func toolCallOf(raw json.RawMessage) (transport.ToolCall, bool) {
+// arguments so no field is lost. The item id is returned so a later result
+// can be reported back with item/update.
+func toolCallOf(raw json.RawMessage) (transport.ToolCall, string, bool) {
 	var item struct {
 		ID      string `json:"id"`
 		Type    string `json:"type"`
@@ -334,16 +385,16 @@ func toolCallOf(raw json.RawMessage) (transport.ToolCall, bool) {
 	case "mcpToolCall":
 		name = item.Name
 	default:
-		return transport.ToolCall{}, false
+		return transport.ToolCall{}, "", false
 	}
 	if name == "" {
-		return transport.ToolCall{}, false
+		return transport.ToolCall{}, "", false
 	}
 	id := item.ID
 	if id == "" {
 		id = "call_" + name
 	}
-	return transport.ToolCall{ID: id, Name: name, Arguments: raw}, true
+	return transport.ToolCall{ID: id, Name: name, Arguments: raw}, item.ID, true
 }
 
 // answer replies to a request the server sent us. In practice app-server is
