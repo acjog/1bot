@@ -5,6 +5,7 @@
 package openai
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -101,10 +102,14 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 }
 
 // record appends one inbound request to the log writer (JSONL). It is a no-op
-// when no log is configured.
+// when no log is configured. The body is compacted so a pretty-printed request
+// still occupies exactly one line.
 func (s *Server) record(body []byte) {
 	if s.log == nil {
 		return
+	}
+	if compact := new(bytes.Buffer); json.Compact(compact, body) == nil {
+		body = compact.Bytes()
 	}
 	line, _ := json.Marshal(map[string]any{
 		"ts":      time.Now().Format(time.RFC3339Nano),
