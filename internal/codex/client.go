@@ -183,6 +183,12 @@ func (c *Client) startSession(req transport.Request) (*session, error) {
 		"baseInstructions": base, "developerInstructions": strings.TrimSpace(developer),
 		"approvalPolicy": "never", "allowProviderModelFallback": false,
 		"config": map[string]any{
+			// Tool execution is delegated to the API client through
+			// dynamicTools, so Codex's own sandbox never runs the write. The
+			// mode is still raised to workspace-write so Codex's built-in
+			// "read-only sandbox" prompt does not make it refuse to plan
+			// writes as "no write permission".
+			"sandbox_mode":       "workspace-write",
 			"features.shell_tool": false, "features.unified_exec": false,
 			"features.apps": false, "features.plugins": false, "features.multi_agent": false,
 			"features.browser_use": false, "features.computer_use": false, "features.image_generation": false,
