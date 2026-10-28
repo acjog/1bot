@@ -19,8 +19,9 @@ type wireMessage struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (m wireMessage) hasID() bool   { return len(m.ID) > 0 && string(m.ID) != "null" }
@@ -64,6 +65,9 @@ func (c *Client) call(method string, params any) (wireMessage, error) {
 	select {
 	case m := <-ch:
 		if m.Error != nil {
+			if len(m.Error.Data) > 0 {
+				return m, fmt.Errorf("%s: rpc error %d: %s: %s", method, m.Error.Code, m.Error.Message, m.Error.Data)
+			}
 			return m, fmt.Errorf("%s: rpc error %d: %s", method, m.Error.Code, m.Error.Message)
 		}
 		return m, nil

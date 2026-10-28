@@ -83,9 +83,10 @@ func (b *toolbridge) setTools(tools []transport.Tool) ([]any, error) {
 		return []any{}, nil
 	}
 	return []any{map[string]any{
-		"type": "http",
-		"name": "1bot-tools",
-		"url":  b.url(),
+		"type":    "http",
+		"name":    "1bot-tools",
+		"url":     b.url(),
+		"headers": []any{}, // required by the ACP SDK's McpServerHttp schema
 	}}, nil
 }
 
