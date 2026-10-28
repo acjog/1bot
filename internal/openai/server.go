@@ -6,10 +6,12 @@ package openai
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,21 +25,47 @@ type Server struct {
 	verbose bool
 	log     io.Writer // optional: append inbound requests (JSONL)
 	logMu   sync.Mutex
+	apiKey  string // empty = no authentication
 }
 
-func New(t transport.Transport, model string, verbose bool, log io.Writer) *Server {
-	return &Server{t: t, model: model, verbose: verbose, log: log}
+func New(t transport.Transport, model string, verbose bool, log io.Writer, apiKey string) *Server {
+	return &Server{t: t, model: model, verbose: verbose, log: log, apiKey: apiKey}
 }
 
-// Handler returns the HTTP routes.
+// Handler returns the HTTP routes. When an API key is configured, the chat and
+// models routes require Authorization: Bearer <key>; /healthz stays open.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", s.chat)
-	mux.HandleFunc("/v1/models", s.models)
+	mux.HandleFunc("/v1/chat/completions", s.authorize(s.chat))
+	mux.HandleFunc("/v1/models", s.authorize(s.models))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "ok")
 	})
 	return mux
+}
+
+// authorize gates a handler behind the configured API key. With no key
+// configured it passes every request through.
+func (s *Server) authorize(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.apiKey != "" && !s.checkAuth(r) {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="1bot"`)
+			http.Error(w, "invalid or missing API key", http.StatusUnauthorized)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// checkAuth verifies an Authorization: Bearer <key> header against the
+// configured key in constant time.
+func (s *Server) checkAuth(r *http.Request) bool {
+	const prefix = "Bearer "
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, prefix) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), []byte(s.apiKey)) == 1
 }
 
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {

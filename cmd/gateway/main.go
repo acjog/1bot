@@ -32,6 +32,7 @@ func main() {
 	y := flag.Bool("y", false, "pass -y to codebuddy (skip permission prompts)")
 	v := flag.Bool("v", false, "verbose: dump plugin-protocol frames")
 	noFS := flag.Bool("no-fs", false, "tell the codebuddy plugin not to declare fs/terminal client capabilities")
+	apiKey := flag.String("api-key", "", "require this API key (Authorization: Bearer) on the HTTP endpoint; empty = no auth")
 	logPath := flag.String("log", "", "append inbound requests (JSONL) to this file; empty = disabled")
 	flag.Parse()
 
@@ -79,7 +80,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: openai.New(h, *model, *v, logWriter).Handler(),
+		Handler: openai.New(h, *model, *v, logWriter, *apiKey).Handler(),
 	}
 	fmt.Fprintf(os.Stderr, "gateway: OpenAI endpoint on http://%s/v1/chat/completions (plugin=%s model=%q)\n", *addr, pluginPath, *model)
 

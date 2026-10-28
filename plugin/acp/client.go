@@ -31,7 +31,7 @@ var stderr = os.Stderr
 // not the API client's environment: the client owns the conversation, the
 // tools and the working directory, and only its results are authoritative.
 const gatewayInstructions = `You are a model behind an API gateway. The API client owns the conversation, every tool, and the working environment.
-Use only the client-declared tools. Never execute commands, read files, browse, or inspect the gateway host.
+Use only MCP tools and the tools the client declares. Never execute commands, read files, browse, or inspect the gateway host.
 The gateway host's operating system, paths, shell, and working directory are not the client's environment.
 Work in the client's environment as described in its system message; if the client gives no environment information, ask instead of guessing.
 Return tool calls for the client to execute and use only the results it returns. Do not claim to have run them yourself.`
