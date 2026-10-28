@@ -36,7 +36,14 @@ func main() {
 	flag.Parse()
 
 	if *cwd == "" {
-		*cwd, _ = os.Getwd()
+		// The gateway host's directory is not the API client's environment, so
+		// default to a fresh, empty directory rather than the plugin's own cwd.
+		dir, err := os.MkdirTemp("", "1bot-cwd-")
+		if err != nil {
+			fatal("tmp cwd: %v", err)
+		}
+		defer os.RemoveAll(dir)
+		*cwd = dir
 	}
 
 	c := acp.New(acp.Options{
