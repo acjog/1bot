@@ -1,4 +1,4 @@
-# 1bot_test
+# 1bot
 
 本地模型网关（概念验证）。把编程 CLI（CodeBuddy / Codex / ZCode）统一封装在
 OpenAI 兼容的 HTTP 接口后面，让任何 OpenAI 客户端用一套协议驱动不同上游。
@@ -42,7 +42,7 @@ plugin/
     plugin-codex/        Codex 插件入口
     plugin-zcode/        ZCode 插件入口
 build.bat / build.sh   构建脚本
-go.mod                模块 1bot_test（Go 1.22）
+go.mod                模块 1bot（Go 1.22）
 ```
 
 ## 模块职责
