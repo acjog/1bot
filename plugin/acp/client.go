@@ -27,6 +27,15 @@ import (
 
 var stderr = os.Stderr
 
+// gatewayInstructions is prepended to every fresh prompt. The gateway host is
+// not the API client's environment: the client owns the conversation, the
+// tools and the working directory, and only its results are authoritative.
+const gatewayInstructions = `You are a model behind an API gateway. The API client owns the conversation, every tool, and the working environment.
+Use only the client-declared tools. Never execute commands, read files, browse, or inspect the gateway host.
+The gateway host's operating system, paths, shell, and working directory are not the client's environment.
+Work in the client's environment as described in its system message; if the client gives no environment information, ask instead of guessing.
+Return tool calls for the client to execute and use only the results it returns. Do not claim to have run them yourself.`
+
 // Options configures a CodeBuddy ACP child process.
 type Options struct {
 	Bin     string // codebuddy executable (name or resolved path)
@@ -264,7 +273,7 @@ func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event
 		return c.await(openCh, onEvent)
 	}
 
-	prompt := userText(messages)
+	prompt := gatewayInstructions + "\n\n" + userText(messages)
 	id, ch := c.register()
 	req := wireMessage{
 		JSONRPC: "2.0",
