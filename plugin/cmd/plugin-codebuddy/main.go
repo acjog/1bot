@@ -6,9 +6,9 @@
 // talks JSON-RPC. This plugin owns all CodeBuddy-specific knowledge.
 //
 // Client-declared function tools reach CodeBuddy through an MCP bridge: the
-// plugin writes the tools to a file, points session/new.mcpServers at its own
-// "mcp-helper" subcommand, and answers the helper's tools/call by round-tripping
-// the call and its result through the proto tool channel. See
+// plugin hosts a loopback HTTP MCP server and points session/new.mcpServers at
+// its URL (CodeBuddy's ACP SDK has no stdio MCP variant), then round-trips each
+// tools/call and its result through the proto tool channel. See
 // CODEBUDDY-CLIENT-TOOLS.md.
 package main
 
@@ -27,16 +27,6 @@ import (
 )
 
 func main() {
-	// mcp-helper subcommand: the stdio MCP server CodeBuddy launches to reach
-	// the client's tools. Dispatched before flag parsing.
-	if len(os.Args) > 1 && os.Args[1] == "mcp-helper" {
-		if err := runMCPHelper(os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "plugin-codebuddy mcp-helper: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
 	bin := flag.String("bin", "codebuddy", "codebuddy executable (name or path)")
 	model := flag.String("model", "", "official model id for the child; empty = settings.json's model")
 	cwd := flag.String("cwd", "", "working directory handed to the agent")
