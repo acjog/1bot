@@ -186,6 +186,11 @@ func (c *Client) initialize() error {
 			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
 			"terminal": true,
 		}
+	} else {
+		params["clientCapabilities"] = map[string]any{
+			"fs":       map[string]any{"readTextFile": false, "writeTextFile": false},
+			"terminal": false,
+		}
 	}
 	res, err := c.call("initialize", params)
 	if err != nil {
