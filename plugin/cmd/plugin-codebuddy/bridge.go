@@ -11,9 +11,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -41,7 +43,8 @@ type mcpRPCRequest struct {
 }
 
 type toolbridge struct {
-	acp *acp.Client
+	acp     *acp.Client
+	verbose bool
 
 	mu    sync.Mutex
 	tools []mcpTool // current tools, as tools/list returns them
@@ -52,8 +55,8 @@ type toolbridge struct {
 	done chan struct{}
 }
 
-func newToolbridge(c *acp.Client) *toolbridge {
-	return &toolbridge{acp: c, done: make(chan struct{})}
+func newToolbridge(c *acp.Client, verbose bool) *toolbridge {
+	return &toolbridge{acp: c, verbose: verbose, done: make(chan struct{})}
 }
 
 // start opens the loopback listener and begins serving the MCP endpoint.
@@ -110,6 +113,9 @@ func (b *toolbridge) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if json.Unmarshal(body, &req) != nil {
 		http.Error(w, "invalid JSON-RPC", http.StatusBadRequest)
 		return
+	}
+	if b.verbose {
+		fmt.Fprintf(os.Stderr, "[mcp <-] %s\n", body)
 	}
 
 	// Notifications (no id) get an acknowledgement, not a JSON-RPC response.
@@ -175,6 +181,11 @@ func (b *toolbridge) handleMCP(w http.ResponseWriter, r *http.Request) {
 		response["error"] = rpcErr
 	} else {
 		response["result"] = result
+	}
+	if b.verbose {
+		if rb, err := json.Marshal(response); err == nil {
+			fmt.Fprintf(os.Stderr, "[mcp ->] %s\n", rb)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)

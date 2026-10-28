@@ -32,6 +32,7 @@ func main() {
 	cwd := flag.String("cwd", "", "working directory handed to the agent")
 	y := flag.Bool("y", false, "pass -y to codebuddy (skip permission prompts)")
 	v := flag.Bool("v", false, "verbose: dump ACP frames to stderr")
+	noFS := flag.Bool("no-fs", false, "don't declare fs/terminal client capabilities (tools run on the API client)")
 	flag.Parse()
 
 	if *cwd == "" {
@@ -39,18 +40,19 @@ func main() {
 	}
 
 	c := acp.New(acp.Options{
-		Bin:     *bin,
-		Model:   *model,
-		SkipY:   *y,
-		Verbose: *v,
-		Cwd:     *cwd,
+		Bin:           *bin,
+		Model:         *model,
+		SkipY:         *y,
+		Verbose:       *v,
+		Cwd:           *cwd,
+		NoFSTerminal:  *noFS,
 	})
 	if err := c.Start(); err != nil {
 		fatal("%v", err)
 	}
 	defer c.Close()
 
-	bridge := newToolbridge(c)
+	bridge := newToolbridge(c, *v)
 	if err := bridge.start(); err != nil {
 		fatal("tool bridge: %v", err)
 	}

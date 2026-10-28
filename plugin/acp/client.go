@@ -37,8 +37,14 @@ type Options struct {
 
 	// MCPServers is the session/new.mcpServers value handed to CodeBuddy.
 	// nil is sent as an empty array. The plugin-codebuddy main process sets it
-	// to a single stdio server that bridges client-declared function tools.
+	// to a single http server that bridges client-declared function tools.
 	MCPServers []any
+
+	// NoFSTerminal, when true, omits the fs/terminal client capabilities from
+	// the initialize handshake. The gateway itself never runs commands — the API
+	// client executes tools through the MCP bridge — so those ACP capabilities
+	// only make CodeBuddy offer read_text_file &c. that nothing serves.
+	NoFSTerminal bool
 }
 
 // Client drives one long-lived `codebuddy --acp` process. It implements
@@ -162,14 +168,17 @@ func (c *Client) readLoop() {
 // initialize performs the ACP handshake, declaring the fs and terminal
 // capabilities so the agent hands those tools back to the client.
 func (c *Client) initialize() error {
-	res, err := c.call("initialize", map[string]any{
+	params := map[string]any{
 		"protocolVersion": 1,
-		"clientCapabilities": map[string]any{
+		"clientInfo":      map[string]any{"name": "1bot_test", "version": "0.1"},
+	}
+	if !c.opts.NoFSTerminal {
+		params["clientCapabilities"] = map[string]any{
 			"fs":       map[string]any{"readTextFile": true, "writeTextFile": true},
 			"terminal": true,
-		},
-		"clientInfo": map[string]any{"name": "1bot_test", "version": "0.1"},
-	})
+		}
+	}
+	res, err := c.call("initialize", params)
 	if err != nil {
 		return err
 	}

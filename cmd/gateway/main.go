@@ -31,6 +31,7 @@ func main() {
 	cwd := flag.String("cwd", "", "working directory handed to the agent (default: current)")
 	y := flag.Bool("y", false, "pass -y to codebuddy (skip permission prompts)")
 	v := flag.Bool("v", false, "verbose: dump plugin-protocol frames")
+	noFS := flag.Bool("no-fs", false, "tell the codebuddy plugin not to declare fs/terminal client capabilities")
 	logPath := flag.String("log", "", "append inbound requests (JSONL) to this file; empty = disabled")
 	flag.Parse()
 
@@ -62,6 +63,9 @@ func main() {
 	}
 	if *v {
 		args = append(args, "-v")
+	}
+	if *noFS {
+		args = append(args, "-no-fs")
 	}
 	if *bin != "codebuddy" {
 		args = append(args, "--bin", *bin)
