@@ -1,7 +1,7 @@
 // Command gateway is the entry point that wires an OpenAI-compatible HTTP
 // front to a CodeBuddy plugin child process, per DESIGN.md.
 //
-//	F:\go\bin\go.exe build -o plugin-codebuddy.exe ./cmd/plugin-codebuddy
+//	F:\go\bin\go.exe build -o plugin-codebuddy.exe ./plugin/cmd/plugin-codebuddy
 //	F:\go\bin\go.exe run ./cmd/gateway -plugin plugin-codebuddy.exe -model gpt-6.1-sol -y
 //	curl -N http://127.0.0.1:8787/v1/chat/completions \
 //	  -H "Content-Type: application/json" \
@@ -135,5 +135,5 @@ func resolvePlugin(arg string) (string, error) {
 			return c, nil
 		}
 	}
-	return "", fmt.Errorf("plugin %q not found; build it with: go build -o plugin-codebuddy.exe ./cmd/plugin-codebuddy", arg)
+	return "", fmt.Errorf("plugin %q not found; build it with: go build -o plugin-codebuddy.exe ./plugin/cmd/plugin-codebuddy", arg)
 }

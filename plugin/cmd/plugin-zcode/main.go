@@ -1,10 +1,10 @@
-// Command plugin-codex is the Codex plugin: a child process that speaks the
-// plugin protocol (proto) on stdio, and drives `codex app-server` underneath.
+// Command plugin-zcode is the ZCode plugin: a child process that speaks the
+// plugin protocol (proto) on stdio, and drives `zcode app-server` underneath.
 // It implements the plugin side of DESIGN.md section 4, exactly like
-// plugin-codebuddy but backed by Codex's app-server protocol.
+// plugin-codebuddy / plugin-codex but backed by Z.AI's ZCode app-server.
 //
-// The gateway never launches codex directly; it launches this plugin and talks
-// JSON-RPC. This plugin owns all Codex-specific knowledge.
+// The gateway never launches zcode directly; it launches this plugin and talks
+// JSON-RPC. This plugin owns all ZCode-specific knowledge.
 package main
 
 import (
@@ -15,25 +15,31 @@ import (
 	"os"
 	"strings"
 
-	"1bot_test/internal/codex"
 	"1bot_test/internal/proto"
 	"1bot_test/internal/transport"
+	"1bot_test/plugin/zcode"
 )
 
 func main() {
-	bin := flag.String("bin", "codex", "codex executable (name or path)")
-	model := flag.String("model", "", "model id for the child")
+	bin := flag.String("bin", "zcode", "zcode executable (name or path)")
+	model := flag.String("model", "", "ignored: zcode reads its model from ~/.zcode/cli/config.json")
 	cwd := flag.String("cwd", "", "working directory handed to the agent")
+	y := flag.Bool("y", false, "accepted for gateway parity; zcode auto-approval is configured separately")
 	v := flag.Bool("v", false, "verbose: dump app-server frames to stderr")
 	flag.Parse()
+
+	// Accepted for gateway parity: ZCode ignores a CLI --model (it reads the
+	// model from ~/.zcode/cli/config.json) and auto-approval is configured
+	// separately, so these two flags are parsed but deliberately unused here.
+	_ = *model
+	_ = *y
 
 	if *cwd == "" {
 		*cwd, _ = os.Getwd()
 	}
 
-	c := codex.New(codex.Options{
+	c := zcode.New(zcode.Options{
 		Bin:     *bin,
-		Model:   *model,
 		Verbose: *v,
 		Cwd:     *cwd,
 	})
@@ -53,8 +59,8 @@ func main() {
 		_ = out.Flush()
 	}
 
-	// Process turns one at a time: one Codex process runs one turn at a time
-	// (serialised inside codex.Client), so we drain stdin in order.
+	// Process turns one at a time: one zcode process runs one turn at a time
+	// (serialised inside zcode.Client), so we drain stdin in order.
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(strings.TrimSpace(string(line))) == 0 {
@@ -88,7 +94,9 @@ func main() {
 			write(proto.Frame{JSONRPC: "2.0", Method: proto.MethodEvent, Params: b})
 		}
 
-		stop, err := c.Complete(p, onEvent)
+		// transport.Complete falls back to Turn (zcode has no RequestTransport);
+		// it rejects client-declared tools, which ZCode's adapter does not support.
+		stop, err := transport.Complete(c, p, onEvent)
 		if err != nil {
 			write(proto.Frame{JSONRPC: "2.0", ID: f.ID, Error: &proto.Error{Code: -32000, Message: err.Error()}})
 			continue
@@ -99,6 +107,6 @@ func main() {
 }
 
 func fatal(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "plugin-codex: "+format+"\n", a...)
+	fmt.Fprintf(os.Stderr, "plugin-zcode: "+format+"\n", a...)
 	os.Exit(1)
 }

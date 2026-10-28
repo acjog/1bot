@@ -34,6 +34,11 @@ type Options struct {
 	SkipY   bool   // pass -y (skip permission prompts)
 	Verbose bool   // dump every JSON-RPC frame to stderr
 	Cwd     string // working directory handed to the agent
+
+	// MCPServers is the session/new.mcpServers value handed to CodeBuddy.
+	// nil is sent as an empty array. The plugin-codebuddy main process sets it
+	// to a single stdio server that bridges client-declared function tools.
+	MCPServers []any
 }
 
 // Client drives one long-lived `codebuddy --acp` process. It implements
@@ -60,17 +65,20 @@ type Client struct {
 	// so both sides share this state through channels.
 	eventMu   sync.Mutex
 	curEvents func(transport.Event)
-	curTool   chan transport.ToolCall      // non-nil while a turn waits for tool calls
-	open      bool                         // a session/prompt is outstanding
-	openCh    chan wireMessage             // its result channel, when open
-	toolCalls map[string]json.RawMessage   // tool call id -> the reverse request id to answer
+	curTool   chan transport.ToolCall    // non-nil while a turn waits for tool calls
+	open      bool                       // a session/prompt is outstanding
+	openCh    chan wireMessage           // its result channel, when open
+	// toolCalls maps a tool call id to the answerer that receives its result
+	// on a later Turn. An ACP reverse request answers the waiting CodeBuddy;
+	// an MCP bridge tool call answers the blocked HTTP callback instead.
+	toolCalls map[string]func(transport.ToolResult)
 }
 
 func New(opts Options) *Client {
 	return &Client{
 		opts:      opts,
 		pending:   map[string]chan wireMessage{},
-		toolCalls: map[string]json.RawMessage{},
+		toolCalls: map[string]func(transport.ToolResult){},
 	}
 }
 
@@ -176,9 +184,13 @@ func (c *Client) initialize() error {
 
 // newSession makes a fresh session. Caller must hold promptMu.
 func (c *Client) newSession() error {
+	servers := c.opts.MCPServers
+	if servers == nil {
+		servers = []any{}
+	}
 	res, err := c.call("session/new", map[string]any{
 		"cwd":        c.opts.Cwd,
-		"mcpServers": []any{},
+		"mcpServers": servers,
 	})
 	if err != nil {
 		return err
@@ -191,6 +203,23 @@ func (c *Client) newSession() error {
 	}
 	c.sessionID = r.SessionID
 	return nil
+}
+
+// SetMCPServers replaces the mcpServers value the next session/new sends. Call
+// it between turns (the main loop is the only Turn caller, so this is safe).
+func (c *Client) SetMCPServers(servers []any) {
+	c.promptMu.Lock()
+	c.opts.MCPServers = servers
+	c.promptMu.Unlock()
+}
+
+// ResetSession drops the current ACP session so the next Turn starts a fresh
+// one carrying the MCP servers most recently set. Use it when the client's tool
+// set changes; the trade-off is losing CodeBuddy's in-session context.
+func (c *Client) ResetSession() {
+	c.promptMu.Lock()
+	c.sessionID = ""
+	c.promptMu.Unlock()
 }
 
 // Turn implements transport.Transport. It first answers any tool results the
@@ -292,10 +321,10 @@ func (c *Client) feedResults(messages []transport.Message) {
 	}
 }
 
-// answerResult responds to a reverse request with the tool's result.
+// answerResult hands a tool result to the answerer registered for its call.
 func (c *Client) answerResult(r *transport.ToolResult) {
 	c.eventMu.Lock()
-	reqID, ok := c.toolCalls[r.CallID]
+	answer, ok := c.toolCalls[r.CallID]
 	if ok {
 		delete(c.toolCalls, r.CallID)
 	}
@@ -303,15 +332,7 @@ func (c *Client) answerResult(r *transport.ToolResult) {
 	if !ok {
 		return
 	}
-	result := map[string]any{
-		"content": []any{map[string]any{"type": "text", "text": r.Content}},
-	}
-	if r.IsError {
-		result["isError"] = true
-	}
-	if err := c.respond(reqID, result); err != nil {
-		fmt.Fprintf(stderr, "answerResult: %v\n", err)
-	}
+	answer(*r)
 }
 
 // userText flattens a conversation's text parts into the single user prompt
@@ -444,9 +465,33 @@ func (c *Client) handleTool(m wireMessage) {
 		Name:      toolName(m.Method),
 		Arguments: m.Params,
 	}
+	reqID := m.ID
+	c.dispatchToolCall(tc, func(r transport.ToolResult) {
+		result := map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": r.Content}},
+		}
+		if r.IsError {
+			result["isError"] = true
+		}
+		if err := c.respond(reqID, result); err != nil {
+			fmt.Fprintf(stderr, "handleTool: %v\n", err)
+		}
+	})
+}
 
+// ToolCall injects a tool call that did not arrive through ACP — an MCP bridge
+// tools/call — into the turn in flight. answer is called with the client's
+// result on a later Turn, exactly like an ACP reverse tool request.
+func (c *Client) ToolCall(tc transport.ToolCall, answer func(transport.ToolResult)) {
+	c.dispatchToolCall(tc, answer)
+}
+
+// dispatchToolCall registers the call's answerer and hands the call to the
+// turn waiting in await, which reports it as EventToolCall and returns
+// StopToolUse. The call stays registered until its result arrives.
+func (c *Client) dispatchToolCall(tc transport.ToolCall, answer func(transport.ToolResult)) {
 	c.eventMu.Lock()
-	c.toolCalls[tc.ID] = m.ID
+	c.toolCalls[tc.ID] = answer
 	tool := c.curTool
 	c.eventMu.Unlock()
 

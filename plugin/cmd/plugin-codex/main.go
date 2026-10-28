@@ -1,9 +1,10 @@
-// Command plugin-codebuddy is the CodeBuddy plugin: a child process that
-// speaks the plugin protocol (proto) on stdio, and drives `codebuddy --acp`
-// underneath. It implements the plugin side of DESIGN.md section 4.
+// Command plugin-codex is the Codex plugin: a child process that speaks the
+// plugin protocol (proto) on stdio, and drives `codex app-server` underneath.
+// It implements the plugin side of DESIGN.md section 4, exactly like
+// plugin-codebuddy but backed by Codex's app-server protocol.
 //
-// The gateway never launches codebuddy directly; it launches this plugin and
-// talks JSON-RPC. This plugin owns all CodeBuddy-specific knowledge.
+// The gateway never launches codex directly; it launches this plugin and talks
+// JSON-RPC. This plugin owns all Codex-specific knowledge.
 package main
 
 import (
@@ -14,27 +15,25 @@ import (
 	"os"
 	"strings"
 
-	"1bot_test/internal/acp"
+	"1bot_test/plugin/codex"
 	"1bot_test/internal/proto"
 	"1bot_test/internal/transport"
 )
 
 func main() {
-	bin := flag.String("bin", "codebuddy", "codebuddy executable (name or path)")
-	model := flag.String("model", "", "official model id for the child; empty = settings.json's model")
+	bin := flag.String("bin", "codex", "codex executable (name or path)")
+	model := flag.String("model", "", "model id for the child")
 	cwd := flag.String("cwd", "", "working directory handed to the agent")
-	y := flag.Bool("y", false, "pass -y to codebuddy (skip permission prompts)")
-	v := flag.Bool("v", false, "verbose: dump ACP frames to stderr")
+	v := flag.Bool("v", false, "verbose: dump app-server frames to stderr")
 	flag.Parse()
 
 	if *cwd == "" {
 		*cwd, _ = os.Getwd()
 	}
 
-	c := acp.New(acp.Options{
+	c := codex.New(codex.Options{
 		Bin:     *bin,
 		Model:   *model,
-		SkipY:   *y,
 		Verbose: *v,
 		Cwd:     *cwd,
 	})
@@ -54,8 +53,8 @@ func main() {
 		_ = out.Flush()
 	}
 
-	// Process turns one at a time: one CodeBuddy process runs one turn at a
-	// time (serialised inside acp.Client), so we drain stdin in order.
+	// Process turns one at a time: one Codex process runs one turn at a time
+	// (serialised inside codex.Client), so we drain stdin in order.
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(strings.TrimSpace(string(line))) == 0 {
@@ -71,10 +70,6 @@ func main() {
 
 		var p proto.TurnParams
 		_ = json.Unmarshal(f.Params, &p)
-		if len(p.Tools) > 0 {
-			write(proto.Frame{JSONRPC: "2.0", ID: f.ID, Error: &proto.Error{Code: -32602, Message: "CodeBuddy adapter does not support client-declared tools; use plugin-codex"}})
-			continue
-		}
 
 		var turnID int64
 		_ = json.Unmarshal(f.ID, &turnID)
@@ -93,7 +88,7 @@ func main() {
 			write(proto.Frame{JSONRPC: "2.0", Method: proto.MethodEvent, Params: b})
 		}
 
-		stop, err := c.Turn(p.Messages, onEvent)
+		stop, err := c.Complete(p, onEvent)
 		if err != nil {
 			write(proto.Frame{JSONRPC: "2.0", ID: f.ID, Error: &proto.Error{Code: -32000, Message: err.Error()}})
 			continue
@@ -104,6 +99,6 @@ func main() {
 }
 
 func fatal(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "plugin-codebuddy: "+format+"\n", a...)
+	fmt.Fprintf(os.Stderr, "plugin-codex: "+format+"\n", a...)
 	os.Exit(1)
 }
