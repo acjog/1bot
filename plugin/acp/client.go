@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"1bot_test/internal/transport"
+	"1bot_test/internal/vlog"
 )
 
 var stderr = os.Stderr
@@ -160,7 +161,7 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if c.opts.Verbose {
-			fmt.Fprintf(stderr, "[<-] %s\n", line)
+			vlog.Frame(stderr, "<-", string(line))
 		}
 
 		switch {
@@ -421,7 +422,7 @@ func (c *Client) notify(m wireMessage) {
 		// EventToolCall. This notification only names it; report nothing here
 		// to avoid a duplicate, empty call.
 		if p.Update.ToolCall.Name != "" && c.opts.Verbose {
-			fmt.Fprintf(stderr, "[tool] %s\n", p.Update.ToolCall.Name)
+			vlog.Frame(stderr, "tool", p.Update.ToolCall.Name)
 		}
 		return
 	default:

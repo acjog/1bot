@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"1bot_test/internal/vlog"
 )
 
 // wireMessage is a JSON-RPC 2.0 frame. ACP carries these as newline-delimited
@@ -93,7 +95,7 @@ func (c *Client) write(m wireMessage) error {
 		return err
 	}
 	if c.opts.Verbose {
-		fmt.Fprintf(stderr, "[->] %s\n", b)
+		vlog.Frame(stderr, "->", string(b))
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

@@ -37,7 +37,7 @@ func New(t transport.Transport, model string, verbose bool, log io.Writer, apiKe
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.authorize(s.chat))
-	mux.HandleFunc("/v1/responses", s.authorize(s.responses))
+	//mux.HandleFunc("/v1/responses", s.authorize(s.responses))
 	mux.HandleFunc("/v1/models", s.authorize(s.models))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "ok")

@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"1bot_test/internal/transport"
+	"1bot_test/internal/vlog"
 )
 
 var stderr = os.Stderr
@@ -125,7 +126,7 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if c.opts.Verbose {
-			fmt.Fprintf(stderr, "[<-] %s\n", line)
+			vlog.Frame(stderr, "<-", string(line))
 		}
 
 		switch {

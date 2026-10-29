@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"1bot_test/internal/transport"
+	"1bot_test/internal/vlog"
 )
 
 // Responses API inbound types (POST /v1/responses). The shape differs from Chat
@@ -332,7 +333,7 @@ func (s *Server) responsesStream(w http.ResponseWriter, req transport.Request, m
 			})
 		case transport.EventThought:
 			if s.verbose {
-				fmt.Fprintf(stderr, "[thought] %s", ev.Text)
+				vlog.Frame(stderr, "thought", ev.Text)
 			}
 		}
 	}

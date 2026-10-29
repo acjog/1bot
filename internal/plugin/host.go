@@ -17,6 +17,7 @@ import (
 
 	"1bot_test/internal/proto"
 	"1bot_test/internal/transport"
+	"1bot_test/internal/vlog"
 )
 
 var stderr = os.Stderr
@@ -106,7 +107,7 @@ func (h *Host) readLoop() {
 			continue
 		}
 		if h.opts.Verbose {
-			fmt.Fprintf(stderr, "[plugin <-] %s\n", line)
+			vlog.Frame(stderr, "plugin <-", string(line))
 		}
 		switch {
 		case f.Method == proto.MethodEvent:
@@ -211,7 +212,7 @@ func (h *Host) write(f proto.Frame) error {
 		return err
 	}
 	if h.opts.Verbose {
-		fmt.Fprintf(stderr, "[plugin ->] %s\n", b)
+		vlog.Frame(stderr, "plugin ->", string(b))
 	}
 	h.writeMu.Lock()
 	defer h.writeMu.Unlock()

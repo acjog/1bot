@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"1bot_test/internal/transport"
+	"1bot_test/internal/vlog"
 )
 
 var stderr = os.Stderr
@@ -74,7 +75,7 @@ func (s *Server) stream(w http.ResponseWriter, req transport.Request, model stri
 			toolIndex++
 		case transport.EventThought:
 			if s.verbose {
-				fmt.Fprintf(stderr, "[thought] %s", ev.Text)
+				vlog.Frame(stderr, "thought", ev.Text)
 			}
 		}
 	}
