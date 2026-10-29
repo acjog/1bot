@@ -317,6 +317,10 @@ func (c *Client) Complete(req transport.Request, onEvent func(transport.Event)) 
 				}
 			}
 		}
+		// Refresh the history snapshot before starting a new turn on a reused
+		// thread, so a later tool result is validated against this turn's
+		// conversation instead of a stale snapshot.
+		s.history = req.Messages
 		s.updated = time.Now()
 		input := []any{}
 		for _, p := range last.Parts {
