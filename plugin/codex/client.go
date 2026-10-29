@@ -380,7 +380,10 @@ func validateContinuation(s *session, req transport.Request, callID string) erro
 		return fmt.Errorf("tool result must follow its assistant tool call")
 	}
 	for _, p := range assistant.Parts {
-		if p.Call != nil && p.Call.ID == callID && p.Call.Name == s.call.Name  {
+		if p.Call != nil && p.Call.ID == callID {
+			if s.call != nil && p.Call.Name != s.call.Name {
+				fmt.Fprintf(stderr, "[validate] tool name mismatch (accepted): callID=%q, incoming=%q, saved=%q\n", callID, p.Call.Name, s.call.Name)
+			}
 			return nil
 		}
 	}
