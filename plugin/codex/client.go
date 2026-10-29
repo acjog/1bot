@@ -348,8 +348,8 @@ func validateContinuation(s *session, req transport.Request, callID string) erro
 	if len(req.Messages) != n+2 {
 		fmt.Fprintf(stderr, "[validate] message count mismatch: got %d, want %d (history %d + assistant + tool result)\n",
 			len(req.Messages), n+2, n)
-		dumpRecent("saved history", s.history, 5)
-		dumpRecent("request", req.Messages, 5)
+		dumpRecent("saved history", s.history, 10)
+		dumpRecent("request", req.Messages, 10)
 		return fmt.Errorf("tool result conversation, model, or tools do not match the original request")
 	}
 	for i := 0; i < n; i++ {
