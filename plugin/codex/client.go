@@ -348,6 +348,8 @@ func validateContinuation(s *session, req transport.Request, callID string) erro
 	if len(req.Messages) != n+2 {
 		fmt.Fprintf(stderr, "[validate] message count mismatch: got %d, want %d (history %d + assistant + tool result)\n",
 			len(req.Messages), n+2, n)
+		dumpRecent("saved history", s.history, 5)
+		dumpRecent("request", req.Messages, 5)
 		return fmt.Errorf("tool result conversation, model, or tools do not match the original request")
 	}
 	for i := 0; i < n; i++ {
@@ -382,6 +384,41 @@ func validateContinuation(s *session, req transport.Request, callID string) erro
 	fmt.Fprintf(stderr, "[validate] assistant tool call does not match pending call:\n  callID=%q\n  pending=%s\n  assistant parts=%d\n", callID, sb, len(assistant.Parts))
 	return fmt.Errorf("tool result does not match the pending assistant tool call")
 }
+// dumpRecent prints the last k messages of a slice, one line each, so a
+// continuation mismatch can be diagnosed without dumping every full body.
+func dumpRecent(label string, msgs []transport.Message, k int) {
+	start := len(msgs) - k
+	if start < 0 {
+		start = 0
+	}
+	fmt.Fprintf(stderr, "[validate] %s (last %d of %d):\n", label, len(msgs)-start, len(msgs))
+	for i := start; i < len(msgs); i++ {
+		fmt.Fprintf(stderr, "  [%d] role=%s", i, msgs[i].Role)
+		for _, p := range msgs[i].Parts {
+			switch p.Kind {
+			case transport.PartText:
+				fmt.Fprintf(stderr, " text=%q", truncate(p.Text, 80))
+			case transport.PartToolCall:
+				if p.Call != nil {
+					fmt.Fprintf(stderr, " tool_call(id=%s name=%s)", p.Call.ID, p.Call.Name)
+				}
+			case transport.PartToolResult:
+				if p.Result != nil {
+					fmt.Fprintf(stderr, " tool_result(callId=%s)", p.Result.CallID)
+				}
+			}
+		}
+		fmt.Fprintln(stderr)
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 func jsonEqual(a, b json.RawMessage) bool {
 	var x, y any
 	return json.Unmarshal(a, &x) == nil && json.Unmarshal(b, &y) == nil && reflect.DeepEqual(x, y)

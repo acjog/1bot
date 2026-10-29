@@ -22,14 +22,15 @@ import (
 type Server struct {
 	t       transport.Transport
 	model   string // default model when the request omits one
+	owner   string
 	verbose bool
 	log     io.Writer // optional: append inbound requests (JSONL)
 	logMu   sync.Mutex
 	apiKey  string // empty = no authentication
 }
 
-func New(t transport.Transport, model string, verbose bool, log io.Writer, apiKey string) *Server {
-	return &Server{t: t, model: model, verbose: verbose, log: log, apiKey: apiKey}
+func New(t transport.Transport, model string, verbose bool, log io.Writer, apiKey string, owner string) *Server {
+	return &Server{t: t, model: model, verbose: verbose, log: log, apiKey: apiKey, owner: owner}
 }
 
 // Handler returns the HTTP routes. When an API key is configured, the chat and
@@ -154,7 +155,7 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"object": "list",
 		"data": []any{map[string]any{
-			"id": s.model, "object": "model", "owned_by": "codebuddy",
+			"id": s.model, "object": "model", "owned_by": s.owner,
 		}},
 	})
 }

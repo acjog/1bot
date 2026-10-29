@@ -78,9 +78,10 @@ func main() {
 	}
 	defer h.Close()
 
+	owner := strings.TrimPrefix(strings.TrimSuffix(strings.ToLower(filepath.Base(pluginPath)), ".exe"), "plugin-")
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: openai.New(h, *model, *v, logWriter, *apiKey).Handler(),
+		Handler: openai.New(h, *model, *v, logWriter, *apiKey, owner).Handler(),
 	}
 	fmt.Fprintf(os.Stderr, "gateway: OpenAI endpoints on http://%s/v1/chat/completions and /v1/responses (plugin=%s model=%q)\n", *addr, pluginPath, *model)
 
