@@ -345,11 +345,32 @@ func (c *Client) Complete(req transport.Request, onEvent func(transport.Event)) 
 }
 func validateContinuation(s *session, req transport.Request, callID string) error {
 	n := len(s.history)
-	if len(req.Messages) != n+2 || !semanticEqual(req.Messages[:n], s.history) || req.Model != s.model || !semanticEqual(req.Tools, s.tools) {
+	if len(req.Messages) != n+2 {
+		fmt.Fprintf(stderr, "[validate] message count mismatch: got %d, want %d (history %d + assistant + tool result)\n",
+			len(req.Messages), n+2, n)
+		return fmt.Errorf("tool result conversation, model, or tools do not match the original request")
+	}
+	for i := 0; i < n; i++ {
+		if !semanticEqual(req.Messages[i], s.history[i]) {
+			sb, _ := json.Marshal(s.history[i])
+			rb, _ := json.Marshal(req.Messages[i])
+			fmt.Fprintf(stderr, "[validate] history mismatch at index %d:\n  saved:    %s\n  incoming: %s\n", i, sb, rb)
+			return fmt.Errorf("tool result conversation, model, or tools do not match the original request")
+		}
+	}
+	if req.Model != s.model {
+		fmt.Fprintf(stderr, "[validate] model mismatch: incoming %q, saved %q\n", req.Model, s.model)
+		return fmt.Errorf("tool result conversation, model, or tools do not match the original request")
+	}
+	if !semanticEqual(req.Tools, s.tools) {
+		sb, _ := json.Marshal(s.tools)
+		rb, _ := json.Marshal(req.Tools)
+		fmt.Fprintf(stderr, "[validate] tools mismatch:\n  saved:    %s\n  incoming: %s\n", sb, rb)
 		return fmt.Errorf("tool result conversation, model, or tools do not match the original request")
 	}
 	assistant := req.Messages[n]
 	if assistant.Role != "assistant" {
+		fmt.Fprintf(stderr, "[validate] messages[%d] role=%q, want assistant\n", n, assistant.Role)
 		return fmt.Errorf("tool result must follow its assistant tool call")
 	}
 	for _, p := range assistant.Parts {
@@ -357,6 +378,8 @@ func validateContinuation(s *session, req transport.Request, callID string) erro
 			return nil
 		}
 	}
+	sb, _ := json.Marshal(s.call)
+	fmt.Fprintf(stderr, "[validate] assistant tool call does not match pending call:\n  callID=%q\n  pending=%s\n  assistant parts=%d\n", callID, sb, len(assistant.Parts))
 	return fmt.Errorf("tool result does not match the pending assistant tool call")
 }
 func jsonEqual(a, b json.RawMessage) bool {
