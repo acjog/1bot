@@ -82,7 +82,7 @@ func main() {
 		Addr:    *addr,
 		Handler: openai.New(h, *model, *v, logWriter, *apiKey).Handler(),
 	}
-	fmt.Fprintf(os.Stderr, "gateway: OpenAI endpoint on http://%s/v1/chat/completions (plugin=%s model=%q)\n", *addr, pluginPath, *model)
+	fmt.Fprintf(os.Stderr, "gateway: OpenAI endpoints on http://%s/v1/chat/completions and /v1/responses (plugin=%s model=%q)\n", *addr, pluginPath, *model)
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {

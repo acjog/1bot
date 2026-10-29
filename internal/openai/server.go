@@ -1,7 +1,7 @@
-// Package openai exposes an OpenAI-compatible Chat Completions endpoint and
-// routes each request through a transport.Transport. It owns only the inbound
-// protocol and its translation; it knows nothing about how the transport
-// reaches an upstream model.
+// Package openai exposes OpenAI-compatible inbound endpoints (Chat Completions
+// and Responses) and routes each request through a transport.Transport. It owns
+// only the inbound protocols and their translation; it knows nothing about how
+// the transport reaches an upstream model.
 package openai
 
 import (
@@ -37,6 +37,7 @@ func New(t transport.Transport, model string, verbose bool, log io.Writer, apiKe
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", s.authorize(s.chat))
+	mux.HandleFunc("/v1/responses", s.authorize(s.responses))
 	mux.HandleFunc("/v1/models", s.authorize(s.models))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, "ok")
