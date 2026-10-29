@@ -11,7 +11,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,6 +20,7 @@ import (
 
 	"1bot_test/plugin/acp"
 	"1bot_test/internal/transport"
+	"1bot_test/internal/vlog"
 )
 
 // toolResultTimeout is how long a tools/call waits for the client to send its
@@ -115,7 +115,7 @@ func (b *toolbridge) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.verbose {
-		fmt.Fprintf(os.Stderr, "[mcp <-] %s\n", body)
+		vlog.Frame(os.Stderr, "mcp <-", string(body))
 	}
 
 	// Notifications (no id) get an acknowledgement, not a JSON-RPC response.
@@ -184,7 +184,7 @@ func (b *toolbridge) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	if b.verbose {
 		if rb, err := json.Marshal(response); err == nil {
-			fmt.Fprintf(os.Stderr, "[mcp ->] %s\n", rb)
+			vlog.Frame(os.Stderr, "mcp ->", string(rb))
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

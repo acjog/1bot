@@ -161,7 +161,7 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if c.opts.Verbose {
-			vlog.Frame(stderr, "<-", string(line))
+			vlog.Frame(stderr, "acp <-", string(line))
 		}
 
 		switch {
@@ -422,7 +422,7 @@ func (c *Client) notify(m wireMessage) {
 		// EventToolCall. This notification only names it; report nothing here
 		// to avoid a duplicate, empty call.
 		if p.Update.ToolCall.Name != "" && c.opts.Verbose {
-			vlog.Frame(stderr, "tool", p.Update.ToolCall.Name)
+			vlog.Frame(stderr, "acp tool", p.Update.ToolCall.Name)
 		}
 		return
 	default:

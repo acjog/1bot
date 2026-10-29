@@ -126,7 +126,7 @@ func (c *Client) readLoop() {
 			continue
 		}
 		if c.opts.Verbose {
-			vlog.Frame(stderr, "<-", string(line))
+			vlog.Frame(stderr, "zcode <-", string(line))
 		}
 
 		switch {

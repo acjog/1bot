@@ -90,7 +90,7 @@ func (c *Client) write(m wireMessage) error {
 		return err
 	}
 	if c.opts.Verbose {
-		vlog.Frame(stderr, "->", string(b))
+		vlog.Frame(stderr, "codex ->", string(b))
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

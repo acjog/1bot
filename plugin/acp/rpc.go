@@ -95,7 +95,7 @@ func (c *Client) write(m wireMessage) error {
 		return err
 	}
 	if c.opts.Verbose {
-		vlog.Frame(stderr, "->", string(b))
+		vlog.Frame(stderr, "acp ->", string(b))
 	}
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
