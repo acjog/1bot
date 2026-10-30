@@ -835,64 +835,72 @@ Download the update?</source>
     </message>
     <message>
         <location filename="accesscard.cpp" line="10"/>
-        <location filename="accesscard.cpp" line="93"/>
+        <location filename="accesscard.cpp" line="111"/>
         <source>Connect</source>
         <translation>接入</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="50"/>
-        <location filename="accesscard.cpp" line="104"/>
+        <location filename="accesscard.cpp" line="65"/>
+        <location filename="accesscard.cpp" line="124"/>
         <source>Hide</source>
         <translation>隱藏</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="50"/>
-        <location filename="accesscard.cpp" line="104"/>
+        <location filename="accesscard.cpp" line="65"/>
+        <location filename="accesscard.cpp" line="124"/>
         <source>Show</source>
         <translation>顯示</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="94"/>
-        <source>Use these values to connect any OpenAI-compatible client to the local gateway.</source>
-        <translation>使用以下資訊即可將任意 OpenAI 相容用戶端接入本機閘道。</translation>
+        <location filename="accesscard.cpp" line="112"/>
+        <location filename="accesscard.cpp" line="113"/>
+        <source>Protocol:</source>
+        <translation>協定：</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="95"/>
+        <location filename="accesscard.cpp" line="114"/>
+        <source>Select a protocol to view matching request examples. These examples use non-streaming requests.</source>
+        <translation>選擇協定查看對應的請求範例。以下範例均使用非串流請求。</translation>
+    </message>
+    <message>
+        <location filename="accesscard.cpp" line="115"/>
         <source>Base URL</source>
         <translation>基礎位址</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="96"/>
+        <location filename="accesscard.cpp" line="116"/>
         <source>API Key</source>
         <translation>API 金鑰</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="97"/>
+        <location filename="accesscard.cpp" line="117"/>
         <source>Model</source>
         <translation>模型</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="98"/>
-        <location filename="accesscard.cpp" line="99"/>
-        <location filename="accesscard.cpp" line="100"/>
-        <location filename="accesscard.cpp" line="101"/>
-        <location filename="accesscard.cpp" line="102"/>
-        <location filename="accesscard.cpp" line="103"/>
+        <location filename="accesscard.cpp" line="118"/>
+        <location filename="accesscard.cpp" line="119"/>
+        <location filename="accesscard.cpp" line="120"/>
+        <location filename="accesscard.cpp" line="121"/>
+        <location filename="accesscard.cpp" line="122"/>
+        <location filename="accesscard.cpp" line="123"/>
+        <location filename="accesscard.cpp" line="130"/>
+        <location filename="accesscard.cpp" line="131"/>
         <source>Copy</source>
         <translation>複製</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="105"/>
+        <location filename="accesscard.cpp" line="125"/>
         <source>PowerShell</source>
         <translation>PowerShell</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="106"/>
+        <location filename="accesscard.cpp" line="126"/>
         <source>CMD</source>
         <translation>CMD</translation>
     </message>
     <message>
-        <location filename="accesscard.cpp" line="107"/>
+        <location filename="accesscard.cpp" line="127"/>
         <source>curl</source>
         <translation>curl</translation>
     </message>
