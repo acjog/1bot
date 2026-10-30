@@ -7,6 +7,12 @@
 //
 //	POST {base}/v1/messages   (base = api.z.ai/api/anthropic, or BigModel's)
 //	stream SSE text deltas     -> transport.EventText
+//	stream SSE tool_use blocks -> transport.EventToolCall
+//
+// Client tools are declared as Anthropic `tools` and round-trip through the
+// conversation: an assistant `tool_use` is answered by a later `tool_result`
+// in a user message. The Messages API is stateless, so no thread/session state
+// is kept here.
 package zcode
 
 import (
@@ -36,7 +42,7 @@ type Options struct {
 }
 
 // Client turns one conversation into Anthropic Messages requests. It
-// implements transport.Transport.
+// implements transport.Transport and transport.RequestTransport.
 type Client struct {
 	opts Options
 	cred cred
@@ -88,32 +94,66 @@ func (c *Client) Models() ([]transport.Model, error) {
 	return []transport.Model{{ID: DefaultModel, Name: "GLM-5"}}, nil
 }
 
-// anthropicMessage is one Messages-API message. Content is sent as a plain
-// string; tool parts are dropped (this adapter declares no client tools).
+// anthropicTool is a declared client function, Anthropic's tool shape.
+type anthropicTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema"`
+}
+
+// anthropicContent is one block of a message: text, a tool_use, or a
+// tool_result. Only the fields each block type needs are set.
+type anthropicContent struct {
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	ID        string          `json:"id,omitempty"`          // tool_use
+	Name      string          `json:"name,omitempty"`        // tool_use
+	Input     json.RawMessage `json:"input,omitempty"`       // tool_use
+	ToolUseID string          `json:"tool_use_id,omitempty"` // tool_result
+	Content   string          `json:"content,omitempty"`     // tool_result
+	IsError   bool            `json:"is_error,omitempty"`    // tool_result
+}
+
 type anthropicMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string             `json:"role"`
+	Content []anthropicContent `json:"content"`
 }
 
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
 	System    string             `json:"system,omitempty"`
+	Tools     []anthropicTool    `json:"tools,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 	Stream    bool               `json:"stream"`
 }
 
-// Turn implements transport.Transport: it posts the whole conversation to the
-// Messages endpoint and streams text deltas back through onEvent.
+// Turn implements transport.Transport; it delegates to Complete with no tools.
 func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
+	return c.Complete(transport.Request{Messages: messages}, onEvent)
+}
+
+// Complete implements transport.RequestTransport: it posts the whole
+// conversation (tools declared, tool_use/tool_result blocks preserved) to the
+// Messages endpoint and streams the reply back through onEvent.
+func (c *Client) Complete(req transport.Request, onEvent func(transport.Event)) (string, error) {
 	c.promptMu.Lock()
 	defer c.promptMu.Unlock()
 
-	model := c.opts.Model
+	model := req.Model
+	if model == "" {
+		model = c.opts.Model
+	}
 	if model == "" {
 		model = DefaultModel
 	}
-	system, out := toAnthropic(messages)
+
+	tools := req.Tools
+	if string(req.ToolChoice) == `"none"` {
+		tools = nil
+	}
+
+	system, out := toAnthropic(req.Messages)
 	if len(out) == 0 {
 		return "", fmt.Errorf("no messages")
 	}
@@ -122,6 +162,7 @@ func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event
 		Model:     model,
 		MaxTokens: 8192,
 		System:    system,
+		Tools:     toAnthropicTools(tools),
 		Messages:  out,
 		Stream:    true,
 	})
@@ -130,15 +171,15 @@ func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event
 	}
 
 	url := c.cred.Base + "/v1/messages"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.cred.Key)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", c.cred.Key)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	res, err := c.http.Do(req)
+	res, err := c.http.Do(httpReq)
 	if err != nil {
 		return "", err
 	}
@@ -151,8 +192,18 @@ func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event
 	return c.stream(res, onEvent)
 }
 
-// stream consumes Anthropic's SSE reply and forwards text deltas.
+// stream consumes Anthropic's SSE reply: text deltas go out as EventText, and
+// each tool_use block is accumulated into an EventToolCall. A reply that ends
+// with tool calls reports StopToolUse so the client runs them and continues.
 func (c *Client) stream(res *http.Response, onEvent func(transport.Event)) (string, error) {
+	type toolUse struct {
+		id   string
+		name string
+		args strings.Builder
+	}
+	tools := map[int]*toolUse{}
+	var used bool
+
 	sc := bufio.NewScanner(res.Body)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	for sc.Scan() {
@@ -169,9 +220,16 @@ func (c *Client) stream(res *http.Response, onEvent func(transport.Event)) (stri
 		}
 		var ev struct {
 			Type  string `json:"type"`
-			Delta struct {
+			Index *int   `json:"index"`
+			ContentBlock struct {
 				Type string `json:"type"`
-				Text string `json:"text"`
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"content_block"`
+			Delta struct {
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 			Error struct {
 				Type    string `json:"type"`
@@ -182,13 +240,44 @@ func (c *Client) stream(res *http.Response, onEvent func(transport.Event)) (stri
 			continue
 		}
 		switch ev.Type {
+		case "content_block_start":
+			if ev.ContentBlock.Type == "tool_use" && ev.Index != nil {
+				tools[*ev.Index] = &toolUse{id: ev.ContentBlock.ID, name: ev.ContentBlock.Name}
+			}
 		case "content_block_delta":
-			if ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
-				onEvent(transport.Event{Kind: transport.EventText, Text: ev.Delta.Text})
+			switch ev.Delta.Type {
+			case "text_delta":
+				if ev.Delta.Text != "" {
+					onEvent(transport.Event{Kind: transport.EventText, Text: ev.Delta.Text})
+				}
+			case "input_json_delta":
+				if ev.Index != nil {
+					if t := tools[*ev.Index]; t != nil {
+						t.args.WriteString(ev.Delta.PartialJSON)
+					}
+				}
+			}
+		case "content_block_stop":
+			if ev.Index != nil {
+				if t := tools[*ev.Index]; t != nil {
+					args := strings.TrimSpace(t.args.String())
+					if args == "" {
+						args = "{}"
+					}
+					onEvent(transport.Event{Kind: transport.EventToolCall, Call: &transport.ToolCall{
+						ID:        t.id,
+						Name:      t.name,
+						Arguments: json.RawMessage(args),
+					}})
+					used = true
+				}
 			}
 		case "error":
 			return "", fmt.Errorf("zcode: %s: %s", ev.Error.Type, ev.Error.Message)
 		case "message_stop":
+			if used {
+				return transport.StopToolUse, nil
+			}
 			return transport.StopEndTurn, nil
 		}
 	}
@@ -199,27 +288,66 @@ func (c *Client) stream(res *http.Response, onEvent func(transport.Event)) (stri
 }
 
 // toAnthropic folds system/developer text into the top-level system field and
-// user/assistant text into messages, in order.
+// converts every other message into content blocks, preserving tool_use and
+// tool_result parts in order. A tool message (role "tool") becomes a user
+// message, since Anthropic has no tool role.
 func toAnthropic(msgs []transport.Message) (system string, out []anthropicMessage) {
 	for _, m := range msgs {
-		var sb strings.Builder
-		for _, p := range m.Parts {
-			if p.Kind == transport.PartText {
-				sb.WriteString(p.Text)
+		if m.Role == "system" || m.Role == "developer" {
+			var sb strings.Builder
+			for _, p := range m.Parts {
+				if p.Kind == transport.PartText {
+					sb.WriteString(p.Text)
+				}
 			}
-		}
-		text := sb.String()
-		switch m.Role {
-		case "system", "developer":
-			if text != "" {
+			if text := sb.String(); text != "" {
 				if system != "" {
 					system += "\n\n"
 				}
 				system += text
 			}
-		case "user", "assistant":
-			out = append(out, anthropicMessage{Role: m.Role, Content: text})
+			continue
+		}
+
+		role := m.Role
+		if role == "tool" {
+			role = "user"
+		}
+		var blocks []anthropicContent
+		for _, p := range m.Parts {
+			switch p.Kind {
+			case transport.PartText:
+				blocks = append(blocks, anthropicContent{Type: "text", Text: p.Text})
+			case transport.PartToolCall:
+				if p.Call != nil {
+					input := p.Call.Arguments
+					if len(input) == 0 || string(input) == "null" {
+						input = json.RawMessage("{}")
+					}
+					blocks = append(blocks, anthropicContent{Type: "tool_use", ID: p.Call.ID, Name: p.Call.Name, Input: input})
+				}
+			case transport.PartToolResult:
+				if p.Result != nil {
+					blocks = append(blocks, anthropicContent{Type: "tool_result", ToolUseID: p.Result.CallID, Content: p.Result.Content, IsError: p.Result.IsError})
+				}
+			}
+		}
+		if len(blocks) > 0 {
+			out = append(out, anthropicMessage{Role: role, Content: blocks})
 		}
 	}
 	return system, out
+}
+
+// toAnthropicTools maps the gateway's neutral tools to Anthropic's tool shape.
+func toAnthropicTools(tools []transport.Tool) []anthropicTool {
+	out := make([]anthropicTool, 0, len(tools))
+	for _, t := range tools {
+		schema := t.Parameters
+		if len(schema) == 0 || string(schema) == "null" {
+			schema = json.RawMessage(`{"type":"object","properties":{}}`)
+		}
+		out = append(out, anthropicTool{Name: t.Name, Description: t.Description, InputSchema: schema})
+	}
+	return out
 }
