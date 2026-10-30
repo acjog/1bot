@@ -1,9 +1,10 @@
 // Command plugin-zcode is the ZCode plugin: a child process that speaks the
-// plugin protocol (proto) on stdio, and drives `zcode app-server` underneath.
-// It implements the plugin side of DESIGN.md section 4, exactly like
-// plugin-codebuddy / plugin-codex but backed by Z.AI's ZCode app-server.
+// plugin protocol (proto) on stdio, and calls Z.AI's ZCode coding plan
+// directly over its Anthropic-compatible Messages API. It implements the
+// plugin side of DESIGN.md section 4, like plugin-codebuddy / plugin-codex but
+// backed by a direct HTTP call instead of a subprocess.
 //
-// The gateway never launches zcode directly; it launches this plugin and talks
+// The gateway never reaches Z.ai directly; it launches this plugin and talks
 // JSON-RPC. This plugin owns all ZCode-specific knowledge.
 package main
 
@@ -21,27 +22,23 @@ import (
 )
 
 func main() {
-	bin := flag.String("bin", "zcode", "zcode executable (name or path)")
-	model := flag.String("model", "", "ignored: zcode reads its model from ~/.zcode/cli/config.json")
-	cwd := flag.String("cwd", "", "working directory handed to the agent")
-	y := flag.Bool("y", false, "accepted for gateway parity; zcode auto-approval is configured separately")
-	v := flag.Bool("v", false, "verbose: dump app-server frames to stderr")
+	bin := flag.String("bin", "zcode", "accepted for gateway parity; unused (direct API)")
+	model := flag.String("model", "", "model id; empty = glm-5")
+	cwd := flag.String("cwd", "", "accepted for gateway parity; unused (direct API)")
+	y := flag.Bool("y", false, "accepted for gateway parity; unused (direct API)")
+	v := flag.Bool("v", false, "verbose: dump request and SSE events to stderr")
 	flag.Parse()
 
-	// Accepted for gateway parity: ZCode ignores a CLI --model (it reads the
-	// model from ~/.zcode/cli/config.json) and auto-approval is configured
-	// separately, so these two flags are parsed but deliberately unused here.
-	_ = *model
+	// Accepted for gateway parity: a direct HTTP call has no subprocess to
+	// hand a bin, cwd or auto-approval to, so these flags are parsed but
+	// deliberately unused here.
+	_ = *bin
+	_ = *cwd
 	_ = *y
 
-	if *cwd == "" {
-		*cwd, _ = os.Getwd()
-	}
-
 	c := zcode.New(zcode.Options{
-		Bin:     *bin,
+		Model:   *model,
 		Verbose: *v,
-		Cwd:     *cwd,
 	})
 	if err := c.Start(); err != nil {
 		fatal("%v", err)

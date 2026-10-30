@@ -1,24 +1,22 @@
-// Package zcode drives Z.AI's ZCode CLI in `app-server` mode over stdio, and
-// reduces its event stream to transport.Event.
+// Package zcode drives Z.AI's ZCode coding plan directly over its
+// Anthropic-compatible Messages API, and reduces its streamed reply to
+// transport.Event. It reads the plan's key from ZCode's own credential store
+// (~/.zcode/v2) — it never launches `zcode app-server`.
 //
-// The ZCode app-server protocol is newline-delimited JSON (no "jsonrpc" header)
-// and, unlike ACP/Codex, has no initialize handshake. A turn is:
+// One turn is one HTTP request:
 //
-//	session/create  -> sessionId
-//	session/send    -> accepted (asynchronous)
-//	poll session/events until turn.completed, emitting model.streaming deltas
-//
-// ZCode reads its model from ~/.zcode/cli/config.json, NOT from a CLI flag:
-// passing --model to app-server makes it print help and exit.
+//	POST {base}/v1/messages   (base = api.z.ai/api/anthropic, or BigModel's)
+//	stream SSE text deltas     -> transport.EventText
 package zcode
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -29,245 +27,189 @@ import (
 
 var stderr = os.Stderr
 
-// Options configures a ZCode app-server child process.
+// Options configures the ZCode adapter.
 type Options struct {
-	Bin     string // zcode executable (name or resolved path)
-	Verbose bool   // dump every JSON frame to stderr
-	Cwd     string // working directory handed to the agent
+	Model   string // model id; empty = DefaultModel
+	Verbose bool   // dump each request and SSE event to stderr
+	APIKey  string // optional: override the key read from ZCode's store
+	Base    string // optional: override the Anthropic-compatible base URL
 }
 
-// Client drives one long-lived `zcode app-server` process. It implements
-// transport.Transport.
+// Client turns one conversation into Anthropic Messages requests. It
+// implements transport.Transport.
 type Client struct {
 	opts Options
+	cred cred
+	http *http.Client
 
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	scanner *bufio.Scanner
-
-	writeMu sync.Mutex
-	pendMu  sync.Mutex
-	pending map[string]chan wireMessage
-	nextID  int64
-
-	closed chan struct{}
-
-	// promptMu serialises turns: one zcode process runs one turn at a time.
+	// promptMu serialises turns: one request at a time.
 	promptMu sync.Mutex
 }
 
 func New(opts Options) *Client {
-	return &Client{
-		opts:    opts,
-		pending: map[string]chan wireMessage{},
-		closed:  make(chan struct{}),
-	}
+	return &Client{opts: opts}
 }
 
-// Start launches the child and confirms it answers session/list.
+// Start reads ZCode's coding plan credentials. There is no child process to
+// launch, so readiness is just whether a key could be found.
 func (c *Client) Start() error {
-	c.cmd = exec.Command(c.opts.Bin, "app-server")
-	c.cmd.Dir = c.opts.Cwd
-	c.cmd.Stderr = stderr
-
-	in, err := c.cmd.StdinPipe()
+	cred, err := readCred()
 	if err != nil {
 		return err
 	}
-	out, err := c.cmd.StdoutPipe()
-	if err != nil {
-		return err
+	if c.opts.APIKey != "" {
+		cred.Key = c.opts.APIKey
 	}
-	if err := c.cmd.Start(); err != nil {
-		return fmt.Errorf("starting %s app-server: %w", c.opts.Bin, err)
+	if c.opts.Base != "" {
+		cred.Base = strings.TrimRight(c.opts.Base, "/")
 	}
-	c.stdin = in
-	c.scanner = bufio.NewScanner(out)
-	c.scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	go c.readLoop()
-
-	// A cheap liveness probe: app-server has no initialize, so confirm it
-	// answers a request before we claim readiness.
-	if _, err := c.call("session/list", map[string]any{}); err != nil {
-		_ = c.Close()
-		return fmt.Errorf("zcode app-server handshake: %w", err)
+	if cred.Key == "" {
+		return fmt.Errorf("no ZCode coding plan key")
 	}
+	if cred.Base == "" {
+		cred.Base = ZaiBase
+	}
+	c.cred = cred
+	c.http = &http.Client{Timeout: 5 * time.Minute}
 	return nil
 }
 
-// Close kills the child and waits for it to exit.
-func (c *Client) Close() error {
-	c.writeMu.Lock()
-	if c.stdin != nil {
-		_ = c.stdin.Close()
-	}
-	c.writeMu.Unlock()
-	if c.cmd != nil && c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	if c.cmd != nil {
-		_ = c.cmd.Wait()
-	}
-	return nil
+// Close releases nothing: the adapter owns no subprocess or persistent
+// connection.
+func (c *Client) Close() error { return nil }
+
+// anthropicMessage is one Messages-API message. Content is sent as a plain
+// string; tool parts are dropped (this adapter declares no client tools).
+type anthropicMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
-// readLoop consumes the child's stdout and dispatches frames. Notifications
-// (e.g. state.updated) are ignored; we poll session/events ourselves.
-func (c *Client) readLoop() {
-	defer close(c.closed)
-	for c.scanner.Scan() {
-		line := c.scanner.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
-			continue
-		}
-		var m wireMessage
-		if err := json.Unmarshal(line, &m); err != nil {
-			fmt.Fprintf(stderr, "zcode: bad JSON: %v: %s\n", err, line)
-			continue
-		}
-		if c.opts.Verbose {
-			vlog.Frame(stderr, "zcode <-", string(line))
-		}
-
-		switch {
-		case m.hasID() && m.Method == "":
-			c.deliver(m) // a response to one of our requests
-		case m.hasID():
-			// A request the server sent us; app-server is client-driven so
-			// this should not happen. Answer method-not-found so it never hangs.
-			_ = c.write(wireMessage{ID: m.ID, Error: &rpcError{Code: -32601, Message: "method not supported by 1bot_test: " + m.Method}})
-		default:
-			// notification, ignored
-		}
-	}
+type anthropicRequest struct {
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system,omitempty"`
+	Messages  []anthropicMessage `json:"messages"`
+	Stream    bool               `json:"stream"`
 }
 
-// Turn implements transport.Transport. It starts a fresh session, sends the
-// user text, and polls the event stream until turn/completed.
+// Turn implements transport.Transport: it posts the whole conversation to the
+// Messages endpoint and streams text deltas back through onEvent.
 func (c *Client) Turn(messages []transport.Message, onEvent func(transport.Event)) (string, error) {
 	c.promptMu.Lock()
 	defer c.promptMu.Unlock()
 
-	text := lastUserText(messages)
-	if text == "" {
-		return "", fmt.Errorf("no user text")
+	model := c.opts.Model
+	if model == "" {
+		model = DefaultModel
+	}
+	system, out := toAnthropic(messages)
+	if len(out) == 0 {
+		return "", fmt.Errorf("no messages")
 	}
 
-	sessionID, err := c.createSession()
+	body, _ := json.Marshal(anthropicRequest{
+		Model:     model,
+		MaxTokens: 8192,
+		System:    system,
+		Messages:  out,
+		Stream:    true,
+	})
+	if c.opts.Verbose {
+		vlog.Frame(stderr, "zcode ->", string(body))
+	}
+
+	url := c.cred.Base + "/v1/messages"
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.cred.Key)
+	req.Header.Set("anthropic-version", "2023-06-01")
 
-	if err := c.send(sessionID, text); err != nil {
+	res, err := c.http.Do(req)
+	if err != nil {
 		return "", err
 	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+		return "", fmt.Errorf("zcode: %s: %s", res.Status, strings.TrimSpace(string(b)))
+	}
 
-	return c.await(sessionID, onEvent)
+	return c.stream(res, onEvent)
 }
 
-// lastUserText returns the concatenated text of the last user message.
-func lastUserText(messages []transport.Message) string {
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "user" {
+// stream consumes Anthropic's SSE reply and forwards text deltas.
+func (c *Client) stream(res *http.Response, onEvent func(transport.Event)) (string, error) {
+	sc := bufio.NewScanner(res.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := sc.Text()
+		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		if c.opts.Verbose {
+			vlog.Frame(stderr, "zcode <-", data)
+		}
+		var ev struct {
+			Type  string `json:"type"`
+			Delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"delta"`
+			Error struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(data), &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "content_block_delta":
+			if ev.Delta.Type == "text_delta" && ev.Delta.Text != "" {
+				onEvent(transport.Event{Kind: transport.EventText, Text: ev.Delta.Text})
+			}
+		case "error":
+			return "", fmt.Errorf("zcode: %s: %s", ev.Error.Type, ev.Error.Message)
+		case "message_stop":
+			return transport.StopEndTurn, nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return transport.StopEndTurn, nil
+}
+
+// toAnthropic folds system/developer text into the top-level system field and
+// user/assistant text into messages, in order.
+func toAnthropic(msgs []transport.Message) (system string, out []anthropicMessage) {
+	for _, m := range msgs {
 		var sb strings.Builder
-		for _, p := range messages[i].Parts {
+		for _, p := range m.Parts {
 			if p.Kind == transport.PartText {
 				sb.WriteString(p.Text)
 			}
 		}
-		if sb.Len() > 0 {
-			return sb.String()
+		text := sb.String()
+		switch m.Role {
+		case "system", "developer":
+			if text != "" {
+				if system != "" {
+					system += "\n\n"
+				}
+				system += text
+			}
+		case "user", "assistant":
+			out = append(out, anthropicMessage{Role: m.Role, Content: text})
 		}
 	}
-	return ""
-}
-
-func (c *Client) createSession() (string, error) {
-	res, err := c.call("session/create", map[string]any{
-		"workspace": map[string]any{
-			"workspacePath": c.opts.Cwd,
-			"workspaceKey":  c.opts.Cwd,
-		},
-	})
-	if err != nil {
-		return "", err
-	}
-	var r struct {
-		SessionID string `json:"sessionId"`
-	}
-	_ = json.Unmarshal(res.Result, &r)
-	if r.SessionID == "" {
-		fmt.Fprintf(stderr, "zcode: session/create result: %s\n", res.Result)
-		return "", fmt.Errorf("session/create returned no sessionId")
-	}
-	return r.SessionID, nil
-}
-
-func (c *Client) send(sessionID, text string) error {
-	_, err := c.call("session/send", map[string]any{
-		"sessionId": sessionID,
-		"content":   text,
-	})
-	return err
-}
-
-// zEvent is one entry of a session/events result.
-type zEvent struct {
-	Seq     int64           `json:"seq"`
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
-}
-
-func (c *Client) await(sessionID string, onEvent func(transport.Event)) (string, error) {
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	timer := time.NewTimer(300 * time.Second)
-	defer timer.Stop()
-	lastSeq := int64(0)
-
-	for {
-		select {
-		case <-ticker.C:
-			events, err := c.pollEvents(sessionID)
-			if err != nil {
-				return "", err
-			}
-			for _, e := range events {
-				if e.Seq <= lastSeq {
-					continue
-				}
-				lastSeq = e.Seq
-				switch e.Type {
-				case "model.streaming":
-					var p struct {
-						Delta string `json:"delta"`
-					}
-					_ = json.Unmarshal(e.Payload, &p)
-					if p.Delta != "" {
-						onEvent(transport.Event{Kind: transport.EventText, Text: p.Delta})
-					}
-				case "turn.completed":
-					return transport.StopEndTurn, nil
-				}
-			}
-		case <-c.closed:
-			return "", fmt.Errorf("zcode app-server disconnected")
-		case <-timer.C:
-			return "", fmt.Errorf("zcode turn timed out")
-		}
-	}
-}
-
-func (c *Client) pollEvents(sessionID string) ([]zEvent, error) {
-	res, err := c.call("session/events", map[string]any{"sessionId": sessionID})
-	if err != nil {
-		return nil, err
-	}
-	var r struct {
-		Events []zEvent `json:"events"`
-	}
-	_ = json.Unmarshal(res.Result, &r)
-	return r.Events, nil
+	return system, out
 }
