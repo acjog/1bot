@@ -70,6 +70,10 @@ func main() {
 		if err := json.Unmarshal(line, &f); err != nil {
 			continue
 		}
+		if f.HasID() && f.Method == proto.MethodModels {
+			write(proto.ModelsResponse(f.ID, nil, transport.ErrModelsUnsupported))
+			continue
+		}
 		if f.Method != proto.MethodTurn || !f.HasID() {
 			continue
 		}

@@ -71,7 +71,9 @@ type Client struct {
 	pending map[string]chan wireMessage
 	nextID  int64
 
-	sessionID string
+	modelCatalog    []transport.Model
+	modelCatalogErr error
+	sessionID       string
 
 	// promptMu serialises turns: one CodeBuddy process runs one turn at a time.
 	promptMu sync.Mutex
@@ -81,9 +83,9 @@ type Client struct {
 	// so both sides share this state through channels.
 	eventMu   sync.Mutex
 	curEvents func(transport.Event)
-	curTool   chan transport.ToolCall    // non-nil while a turn waits for tool calls
-	open      bool                       // a session/prompt is outstanding
-	openCh    chan wireMessage           // its result channel, when open
+	curTool   chan transport.ToolCall // non-nil while a turn waits for tool calls
+	open      bool                    // a session/prompt is outstanding
+	openCh    chan wireMessage        // its result channel, when open
 	// toolCalls maps a tool call id to the answerer that receives its result
 	// on a later Turn. An ACP reverse request answers the waiting CodeBuddy;
 	// an MCP bridge tool call answers the blocked HTTP callback instead.
@@ -226,6 +228,7 @@ func (c *Client) newSession() error {
 		return fmt.Errorf("session/new result: %w", err)
 	}
 	c.sessionID = r.SessionID
+	c.modelCatalog, c.modelCatalogErr = parseSessionModels(res.Result)
 	return nil
 }
 

@@ -21,9 +21,9 @@ import (
 	"reflect"
 	"strings"
 
-	"1bot_test/plugin/acp"
 	"1bot_test/internal/proto"
 	"1bot_test/internal/transport"
+	"1bot_test/plugin/acp"
 )
 
 func main() {
@@ -47,12 +47,12 @@ func main() {
 	}
 
 	c := acp.New(acp.Options{
-		Bin:           *bin,
-		Model:         *model,
-		SkipY:         *y,
-		Verbose:       *v,
-		Cwd:           *cwd,
-		NoFSTerminal:  *noFS,
+		Bin:          *bin,
+		Model:        *model,
+		SkipY:        *y,
+		Verbose:      *v,
+		Cwd:          *cwd,
+		NoFSTerminal: *noFS,
 	})
 	if err := c.Start(); err != nil {
 		fatal("%v", err)
@@ -89,6 +89,11 @@ func main() {
 		}
 		var f proto.Frame
 		if err := json.Unmarshal(line, &f); err != nil {
+			continue
+		}
+		if f.HasID() && f.Method == proto.MethodModels {
+			models, err := c.Models()
+			write(proto.ModelsResponse(f.ID, models, err))
 			continue
 		}
 		if f.Method != proto.MethodTurn || !f.HasID() {

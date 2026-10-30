@@ -149,13 +149,3 @@ func (s *Server) record(body []byte) {
 	_, _ = fmt.Fprintf(s.log, "%s\n", line)
 	s.logMu.Unlock()
 }
-
-func (s *Server) models(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"object": "list",
-		"data": []any{map[string]any{
-			"id": s.model, "object": "model", "owned_by": s.owner,
-		}},
-	})
-}

@@ -36,6 +36,7 @@ type Host struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	scanner *bufio.Scanner
+	closed  chan struct{}
 
 	writeMu sync.Mutex
 	pendMu  sync.Mutex
@@ -50,6 +51,7 @@ type Host struct {
 func New(opts Options) *Host {
 	return &Host{
 		opts:    opts,
+		closed:  make(chan struct{}),
 		pending: map[string]chan proto.Frame{},
 		events:  map[string]func(transport.Event){},
 	}
@@ -79,7 +81,7 @@ func (h *Host) Start() error {
 	return nil
 }
 
-// Close kills the plugin child and waits for it to exit.
+// Close gives the plugin time to release its CLI before forcing the process tree down.
 func (h *Host) Close() error {
 	h.writeMu.Lock()
 	if h.stdin != nil {
@@ -87,15 +89,20 @@ func (h *Host) Close() error {
 	}
 	h.writeMu.Unlock()
 	if h.cmd != nil && h.cmd.Process != nil {
-		_ = h.cmd.Process.Kill()
-	}
-	if h.cmd != nil {
-		_ = h.cmd.Wait()
+		done := make(chan struct{})
+		go func() { _ = h.cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			killTree(h.cmd.Process)
+			<-done
+		}
 	}
 	return nil
 }
 
 func (h *Host) readLoop() {
+	defer close(h.closed)
 	for h.scanner.Scan() {
 		line := h.scanner.Bytes()
 		if len(strings.TrimSpace(string(line))) == 0 {

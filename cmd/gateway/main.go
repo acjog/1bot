@@ -35,6 +35,11 @@ func main() {
 	apiKey := flag.String("api-key", "", "require this API key (Authorization: Bearer) on the HTTP endpoint; empty = no auth")
 	logPath := flag.String("log", "", "append inbound requests (JSONL) to this file; empty = disabled")
 	flag.Parse()
+	if *apiKey == "" {
+		*apiKey = os.Getenv("ONEBOT_API_KEY")
+	}
+	controlKey := os.Getenv("ONEBOT_CONTROL_KEY")
+	stop := make(chan struct{}, 1)
 
 	var logWriter io.Writer
 	if *logPath != "" {
@@ -81,19 +86,23 @@ func main() {
 	owner := strings.TrimPrefix(strings.TrimSuffix(strings.ToLower(filepath.Base(pluginPath)), ".exe"), "plugin-")
 	srv := &http.Server{
 		Addr:    *addr,
-		Handler: openai.New(h, *model, *v, logWriter, *apiKey, owner).Handler(),
+		Handler: controlHandler(openai.New(h, *model, *v, logWriter, *apiKey, owner).Handler(), controlKey, stop),
 	}
 	fmt.Fprintf(os.Stderr, "gateway: OpenAI endpoints on http://%s/v1/chat/completions and /v1/responses (plugin=%s model=%q)\n", *addr, pluginPath, *model)
 
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fatalf("http: %v", err)
-		}
-	}()
+	httpDone := make(chan error, 1)
+	go func() { httpDone <- srv.ListenAndServe() }()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt)
-	<-sig
+	select {
+	case <-sig:
+	case <-stop:
+	case err := <-httpDone:
+		if err != nil && err != http.ErrServerClosed {
+			fmt.Fprintf(os.Stderr, "gateway: http: %v\n", err)
+		}
+	}
 	fmt.Fprintln(os.Stderr, "\nshutting down")
 	_ = srv.Close()
 }
