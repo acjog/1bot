@@ -14,6 +14,8 @@ if not exist "%GO%" set "GO=go"
 
 rem --- pure Go, no CGO (per DESIGN.md ADR-6) ---
 set "CGO_ENABLED=0"
+set "GOOS=windows"
+set "GOARCH=386"
 
 rem --- run from this script's directory ---
 cd /d "%~dp0"
