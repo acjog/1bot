@@ -78,6 +78,16 @@ func (c *Client) Start() error {
 // connection.
 func (c *Client) Close() error { return nil }
 
+// Models returns the coding plan's model catalog: the models ZCode lists for
+// its built-in coding plan provider in config.json, else the default model
+// alone.
+func (c *Client) Models() ([]transport.Model, error) {
+	if ms := readConfigModels(); len(ms) > 0 {
+		return ms, nil
+	}
+	return []transport.Model{{ID: DefaultModel, Name: "GLM-5"}}, nil
+}
+
 // anthropicMessage is one Messages-API message. Content is sent as a plain
 // string; tool parts are dropped (this adapter declares no client tools).
 type anthropicMessage struct {

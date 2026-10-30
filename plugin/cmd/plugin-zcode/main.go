@@ -68,7 +68,8 @@ func main() {
 			continue
 		}
 		if f.HasID() && f.Method == proto.MethodModels {
-			write(proto.ModelsResponse(f.ID, nil, transport.ErrModelsUnsupported))
+			models, err := c.Models()
+			write(proto.ModelsResponse(f.ID, models, err))
 			continue
 		}
 		if f.Method != proto.MethodTurn || !f.HasID() {

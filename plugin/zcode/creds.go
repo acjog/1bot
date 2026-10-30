@@ -11,7 +11,10 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+
+	"1bot_test/internal/transport"
 )
 
 // ZCode's coding plan is served as an Anthropic-compatible Messages endpoint.
@@ -187,4 +190,37 @@ func readJSON(path string, dst any) bool {
 		return false
 	}
 	return true
+}
+
+// readConfigModels lists the models ZCode's built-in coding plan providers
+// carry in config.json (provider[id].models), the Z.ai one first. ZCode keeps
+// the model it picked per task in its window, not in a file, so this is the
+// catalog the plan offers, not the current selection.
+func readConfigModels() []transport.Model {
+	var cfg struct {
+		Provider map[string]struct {
+			Models map[string]struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	if !readJSON(filepath.Join(zcodeDir(), "v2", "config.json"), &cfg) {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []transport.Model
+	for _, id := range []string{
+		"builtin:zai-coding-plan", "account:zai-individual-coding-plan",
+		"builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan",
+	} {
+		for mid, m := range cfg.Provider[id].Models {
+			if mid == "" || seen[mid] {
+				continue
+			}
+			seen[mid] = true
+			out = append(out, transport.Model{ID: mid, Name: m.Name})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
